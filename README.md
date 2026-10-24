@@ -10,8 +10,7 @@ The images use frank-w's [u-boot](https://github.com/frank-w/u-boot) and
 debootstrapped root filesystem, and options picked with Kconfig
 (`make menuconfig`). The build started as a layer over his
 [BPI-Router-Images](https://github.com/frank-w/BPI-Router-Images) scripts and
-now does the same job itself. Its network configs still come from there, in
-`overlays/`.
+now does the same job itself.
 
 ## Quick start
 
@@ -523,3 +522,11 @@ this order:
   which has no SerDes PCS support. The 4E's `sfp-lan` can't link, and the 8X's
   `lan6` probably can't either. Firmware 1.0.85 may fix this, but flashing it is
   one-way.
+
+## License
+
+MIT (see `LICENSE`), except the kernel patches in `kernel/patches-*`: they
+change Linux source files, so they take those files' licenses. The EIP-197
+patch changes `mt7988a.dtsi`, which is GPL-2.0-only OR MIT. The images the
+build makes hold software under its own licenses: Linux (GPL-2.0), u-boot
+(GPL-2.0+), the distribution's packages and linux-firmware's files.

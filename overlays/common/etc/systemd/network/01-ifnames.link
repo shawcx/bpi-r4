@@ -1,5 +1,6 @@
-# Kernel names (eth0, wan, lan1, ...) for every interface. Only the first
-# matching .link file applies: the r4pro overlay's 00-wan.link comes first.
+# Every interface keeps the name its driver or device tree gives it (eth0,
+# wan, lan1, ...), not a predictable name. networkd applies only the first
+# .link file that matches, so the r4pro overlay's 00-wan.link wins for the WAN.
 [Match]
 OriginalName=*
 

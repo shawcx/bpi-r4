@@ -1,5 +1,5 @@
-# LAN bridge: members in 21-lanbr-bind.network, addresses in
-# 25-lanbr.network (scripts/mkimage, from the network role)
+# The LAN bridge, lanbr0. Its ports are set in 21-lanbr-bind.network and its
+# addresses in 25-lanbr.network, which scripts/mkimage writes for the role.
 [NetDev]
 Name=lanbr0
 Kind=bridge

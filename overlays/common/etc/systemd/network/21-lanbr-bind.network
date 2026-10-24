@@ -1,4 +1,5 @@
-# BPI-R4 LAN ports in the LAN bridge (the r4pro overlay replaces this)
+# The BPI-R4's LAN ports join lanbr0. The R4 Pro's overlay has its own copy
+# of this file, with its port names.
 [Match]
 Name=lan0 lan1 lan2 lan3
 

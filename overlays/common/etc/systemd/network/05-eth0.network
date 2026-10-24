@@ -1,8 +1,9 @@
-# The MT7988 switch's DSA conduit: up, without addresses of its own
+# eth0 is the MT7988 switch's DSA conduit: the CPU's side of the switch. It
+# only has to be up; the switch ports carry the addresses.
 [Match]
 Name=eth0
 
 [Network]
-DHCP=no
+ConfigureWithoutCarrier=yes
 LinkLocalAddressing=no
-ConfigureWithoutCarrier=true
+DHCP=no

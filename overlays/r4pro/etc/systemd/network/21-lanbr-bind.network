@@ -1,7 +1,7 @@
-# BPI-R4 Pro LAN ports, replacing overlays/common's lan0-3. 8X on 7.2: lan1-4 and
-# lan6 (10G combo) on the MxL862xx switch, lan5 on the MT7988 switch (6.18
-# names the MxL ports lan0-4). 4E: lan1-4 and sfp-lan (SFP1) on the
-# MxL862xx, lan5-6 on the MT7988 switch.
+# The R4 Pro's LAN ports join lanbr0, in place of overlays/common's lan0-3:
+# - 8X, kernel 7.2: lan1-4 and lan6 (the 10G combo) on the MxL862xx switch,
+#   lan5 on the MT7988's; 6.18 names the MxL ports lan0-4
+# - 4E: lan1-4 and sfp-lan (SFP1) on the MxL862xx, lan5-6 on the MT7988's
 [Match]
 Name=lan0 lan1 lan2 lan3 lan4 lan5 lan6 sfp-lan
 

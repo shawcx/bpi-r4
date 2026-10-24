@@ -1,0 +1,47 @@
+#!/bin/sh
+# Keep a cellular modem's data connection up (build config MODEM=mm), as
+# modem-connect.service: wait for ModemManager to find a modem, enable it,
+# connect with APN from /etc/default/modem (empty: the network's default) once
+# it's registered, and reconnect when the connection drops. ModemManager's
+# connection dispatcher puts the addresses, route and DNS on the interface.
+# Without a SIM, or with a PIN-locked one, it says so and waits.
+set -u
+APN=
+[ -r /etc/default/modem ] && . /etc/default/modem
+
+last=
+say() {
+	[ "$1" = "$last" ] || echo "$1"
+	last=$1
+}
+key() { # <modem> <key>: one value of mmcli -K
+	mmcli -m "$1" -K 2>/dev/null | sed -n "s/^modem\.generic\.$2 *: //p" | head -1
+}
+
+while :; do
+	m=$(mmcli -L 2>/dev/null | sed -n 's#.*/Modem/\([0-9]*\) .*#\1#p' | head -1)
+	if [ -z "$m" ]; then
+		say "no modem"
+		sleep 30
+		continue
+	fi
+	state=$(key "$m" state)
+	case "$state" in
+	connected)
+		say "connected" ;;
+	registered)
+		say "registered, connecting${APN:+ with APN $APN}"
+		mmcli -m "$m" --simple-connect="ip-type=ipv4v6${APN:+,apn=$APN}" >/dev/null ||
+			say "connect failed, retrying" ;;
+	disabled)
+		say "enabling the modem"
+		mmcli -m "$m" --enable >/dev/null ;;
+	failed)
+		say "modem failed: $(key "$m" state-failed-reason)" ;;
+	locked)
+		say "SIM locked: unlock with mmcli -i <sim> --pin=<PIN>" ;;
+	*)
+		say "modem $state" ;;
+	esac
+	sleep 30
+done

@@ -1,0 +1,8 @@
+# The MT7988 switch's DSA conduit: up, without addresses of its own
+[Match]
+Name=eth0
+
+[Network]
+DHCP=no
+LinkLocalAddressing=no
+ConfigureWithoutCarrier=true

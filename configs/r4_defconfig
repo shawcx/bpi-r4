@@ -1,0 +1,2 @@
+# BPI-R4 (2x SFP), SD card, kernel 6.18, 4GB
+CONFIG_BOARD_R4=y

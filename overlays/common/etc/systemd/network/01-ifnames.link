@@ -1,0 +1,7 @@
+# Kernel names (eth0, wan, lan1, ...) for every interface. Only the first
+# matching .link file applies: the r4pro overlay's 00-wan.link comes first.
+[Match]
+OriginalName=*
+
+[Link]
+NamePolicy=kernel

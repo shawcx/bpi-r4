@@ -1,0 +1,360 @@
+#!/bin/bash
+# Wi-Fi access points (build config WIFI=ap), for wifi-ap.service: one per
+# band in BANDS, each on a radio that can run it, with hostapd run by
+# wifi-ap@<interface>.service. The settings are in /etc/default/wifi-ap;
+# after changing them, run "systemctl restart wifi-ap".
+# - Radios: each wiphy, with the bands it has channels in and how many
+#   channels it runs at once: one for an MT7915E card (2.4 or 5 GHz), one
+#   per band for the BE14. Bands get radios in the order 5, 6, 2.4 GHz, each
+#   the radio that can run the fewest of the bands still to place; a band
+#   left without one is skipped.
+# - Interfaces: wlan5g, wlan6g and wlan2g4, in place of the radios' default
+#   ones. The first on a radio gets its MAC address, the others a locally
+#   administered one made from it.
+# - hostapd: /run/wifi-ap/<interface>.conf, made from the settings and the
+#   radio's HT, VHT and HE capabilities: 20 MHz wide on 2.4 GHz, 80 MHz on 5
+#   and 6 GHz. /etc/hostapd/<interface>.conf, if it exists, is used as is.
+# usage: wifi-ap start|stop|plan (plan: show what start would set up, without
+# the passphrase)
+set -u
+umask 077
+
+# settings, from the environment when there's no /etc/default/wifi-ap
+SSID=${SSID-}
+PASSPHRASE=${PASSPHRASE-}
+COUNTRY=${COUNTRY-}
+BANDS=${BANDS-5g 6g 2g4}
+CHANNEL_2G4=${CHANNEL_2G4-1}
+CHANNEL_5G=${CHANNEL_5G-36}
+CHANNEL_6G=${CHANNEL_6G-37}
+WPA3_ONLY=${WPA3_ONLY-no}
+BRIDGE=${BRIDGE-lanbr0}
+# shellcheck source=/dev/null
+[[ -r /etc/default/wifi-ap ]] && . /etc/default/wifi-ap
+SSID=${SSID:-$(hostname)}
+run=/run/wifi-ap
+
+die() { echo "wifi-ap: $*" >&2; exit 1; }
+
+check_settings() {
+	local b
+	[[ -n $COUNTRY ]] || die "COUNTRY isn't set (hostapd's country_code)"
+	(( ${#PASSPHRASE} >= 8 && ${#PASSPHRASE} <= 63 )) || die "PASSPHRASE needs 8 to 63 characters"
+	for b in $BANDS; do
+		[[ $b == @(2g4|5g|6g) ]] || die "unknown band $b in BANDS (2g4, 5g, 6g)"
+	done
+}
+
+# the drivers load from udev, after their firmware: wait until the number of
+# radios stays the same for 3 seconds, at most 30
+wait_radios() {
+	local n=-1 m same=0
+	for _ in $(seq 30); do
+		m=$(find /sys/class/ieee80211 -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
+		if (( m > 0 && m == n )); then
+			(( ++same >= 3 )) && return
+		else
+			same=0
+		fi
+		n=$m
+		sleep 1
+	done
+}
+
+phy_bands() { # <phy>: " 2g4 5g " and so on, the bands it has enabled channels in
+	iw phy "$1" info | awk '
+		/^\t+\* [0-9.]+ MHz \[/ && !/disabled/ {
+			f = $2 + 0
+			if (f < 2500) b["2g4"] = 1; else if (f < 5930) b["5g"] = 1; else b["6g"] = 1
+		}
+		END { for (k in b) printf " %s", k; print " " }'
+}
+
+phy_channels() { # <phy>: how many channels it runs at once
+	local n
+	n=$(iw phy "$1" info | sed -n 's/.*#channels <= \([0-9]*\).*/\1/p' | sort -n | tail -1)
+	echo "${n:-1}"
+}
+
+band_caps() { # <phy> <iw band: 1, 2 or 4>: HT and VHT capabilities, then
+	# whether its AP has HE, SU beamformer, SU beamformee and MU beamformer
+	iw phy "$1" info | awk -v band="$2:" '
+		/^\tBand [0-9]+:/ { inband = ($2 == band); ap = 0; next }
+		/^\t[^\t]/ { inband = 0 }
+		!inband { next }
+		/^\t\tCapabilities: 0x/ { ht = $2 }
+		/^\t\tVHT Capabilities \(0x/ { vht = $3; gsub(/[():]/, "", vht) }
+		/HE Iftypes:/ { ap = ($0 ~ /[ ,]AP(,|$)/); if (ap) he = 1 }
+		ap && /^\t+SU Beamformer$/ { sub_ = 1 }
+		ap && /^\t+SU Beamformee$/ { sue = 1 }
+		ap && /^\t+MU Beamformer$/ { mub = 1 }
+		END { print (ht ? ht : 0), (vht ? vht : 0), he + 0, sub_ + 0, sue + 0, mub + 0 }'
+}
+
+ht_capab() { # <HT capabilities> <[HT40+], [HT40-] or nothing>
+	local c=$(($1)) s=${2:-}
+	(( c & 0x1 )) && s+="[LDPC]"
+	(( c & 0x20 )) && s+="[SHORT-GI-20]"
+	[[ -n ${2:-} ]] && (( c & 0x40 )) && s+="[SHORT-GI-40]"
+	(( c & 0x80 )) && s+="[TX-STBC]"
+	case $(( (c >> 8) & 3 )) in
+		1) s+="[RX-STBC1]" ;;
+		2) s+="[RX-STBC12]" ;;
+		3) s+="[RX-STBC123]" ;;
+	esac
+	(( c & 0x800 )) && s+="[MAX-AMSDU-7935]"
+	echo "$s"
+}
+
+vht_capab() { # <VHT capabilities>, without 160 MHz
+	local c=$(($1)) s='' n stbc=1234
+	case $(( c & 3 )) in
+		1) s+="[MAX-MPDU-7991]" ;;
+		2) s+="[MAX-MPDU-11454]" ;;
+	esac
+	(( c & 0x10 )) && s+="[RXLDPC]"
+	(( c & 0x20 )) && s+="[SHORT-GI-80]"
+	(( c & 0x80 )) && s+="[TX-STBC-2BY1]"
+	n=$(( (c >> 8) & 7 ))
+	(( n >= 1 && n <= 4 )) && s+="[RX-STBC-${stbc:0:n}]"
+	(( c & 0x800 )) && s+="[SU-BEAMFORMER]"
+	(( c & 0x1000 )) && s+="[SU-BEAMFORMEE]"
+	n=$(( (c >> 13) & 7 ))
+	(( n )) && s+="[BF-ANTENNA-$((n + 1))]"
+	n=$(( (c >> 16) & 7 ))
+	(( n )) && s+="[SOUNDING-DIMENSION-$((n + 1))]"
+	(( c & 0x80000 )) && s+="[MU-BEAMFORMER]"
+	(( c & 0x100000 )) && s+="[MU-BEAMFORMEE]"
+	(( c & 0x200000 )) && s+="[VHT-TXOP-PS]"
+	(( c & 0x400000 )) && s+="[HTC-VHT]"
+	n=$(( (c >> 23) & 7 ))
+	(( n )) && s+="[MAX-A-MPDU-LEN-EXP$n]"
+	case $(( (c >> 26) & 3 )) in
+		2) s+="[VHT-LINK-ADAPT2]" ;;
+		3) s+="[VHT-LINK-ADAPT3]" ;;
+	esac
+	(( c & 0x10000000 )) && s+="[RX-ANTENNA-PATTERN]"
+	(( c & 0x20000000 )) && s+="[TX-ANTENNA-PATTERN]"
+	echo "$s"
+}
+
+# radios for the bands: place sets assign to "<band> <phy> <n>" lines, n
+# counting the interfaces already on that phy
+declare -A bands used
+assign=()
+place() {
+	local p b o n best bestn left=" $BANDS " phys=()
+	declare -A chans
+	for p in /sys/class/ieee80211/*; do
+		[[ -e $p ]] || continue
+		p=${p##*/}
+		phys+=("$p")
+		bands[$p]=$(phy_bands "$p")
+		chans[$p]=$(phy_channels "$p")
+		used[$p]=0
+	done
+	(( ${#phys[@]} )) || { echo "no Wi-Fi radios"; return; }
+	for b in 5g 6g 2g4; do
+		[[ $left == *" $b "* ]] || continue
+		left=${left/ $b / }
+		best=
+		for p in "${phys[@]}"; do
+			# a radio that can run the band and has a channel free
+			if [[ ${bands[$p]} != *" $b "* ]] || (( used[$p] >= chans[$p] )); then
+				continue
+			fi
+			n=0
+			for o in $left; do
+				[[ ${bands[$p]} == *" $o "* ]] && (( n++ ))
+			done
+			if [[ -z $best ]] || (( n < bestn )); then
+				best=$p bestn=$n
+			fi
+		done
+		if [[ -z $best ]]; then
+			echo "$b: no radio left that can run it"
+			continue
+		fi
+		assign+=("$b $best ${used[$best]}")
+		(( used[$best]++ ))
+	done
+}
+
+mac() { # <phy> <n>: the radio's address for the first interface, then
+	# locally administered ones
+	local m
+	m=$(< "/sys/class/ieee80211/$1/macaddress")
+	if (( $2 == 0 )); then
+		echo "$m"
+	else
+		printf '%02x%s%02x\n' $(( 0x${m:0:2} | 2 )) "${m:2:13}" $(( (0x${m:15:2} + $2) & 255 ))
+	fi
+}
+
+conf() { # <band> <phy> <interface>: hostapd's config
+	local b=$1 p=$2 i=$3 ch iwband ht vht he su sue mu c base dir
+	local keys="WPA-PSK SAE" mfp=1 pwe=2
+	case $b in
+		2g4) ch=$CHANNEL_2G4 iwband=1 ;;
+		5g) ch=$CHANNEL_5G iwband=2 ;;
+		6g) ch=$CHANNEL_6G iwband=4 ;;
+	esac
+	read -r ht vht he su sue mu < <(band_caps "$p" "$iwband")
+	# 6 GHz takes WPA3 (SAE) only, with hash-to-element
+	if [[ $b == 6g || $WPA3_ONLY == yes ]]; then
+		keys=SAE mfp=2
+	fi
+	[[ $b != 6g ]] || pwe=1
+	cat <<EOF
+# made by wifi-ap from /etc/default/wifi-ap and $p's capabilities
+interface=$i
+driver=nl80211
+ctrl_interface=/run/hostapd
+ssid=$SSID
+utf8_ssid=1
+country_code=$COUNTRY
+ieee80211d=1
+wmm_enabled=1
+wpa=2
+wpa_key_mgmt=$keys
+rsn_pairwise=CCMP
+ieee80211w=$mfp
+sae_require_mfp=1
+sae_pwe=$pwe
+wpa_passphrase=$PASSPHRASE
+EOF
+	[[ -z $BRIDGE ]] || echo "bridge=$BRIDGE"
+	if (( ch )); then
+		echo "channel=$ch"
+	else
+		echo "channel=acs_survey"
+		[[ $b != 5g ]] || echo "acs_exclude_dfs=1"
+		[[ $b != 6g ]] || echo "acs_exclude_6ghz_non_psc=1"
+	fi
+	case $b in
+	2g4)
+		echo "hw_mode=g"
+		echo "ieee80211n=1"
+		echo "ht_capab=$(ht_capab "$ht")"
+		;;
+	5g)
+		echo "hw_mode=a"
+		echo "ieee80211h=1"
+		echo "ieee80211n=1"
+		if (( ht & 0x2 )) && [[ $vht != 0 ]]; then
+			# 80 MHz: the side of the 40 MHz pair the other half is on, and the
+			# centre of the 80 MHz block (four channels; blocks from 36, 100, 149)
+			base=36
+			(( ch < 100 )) || base=100
+			(( ch < 149 )) || base=149
+			dir="[HT40+]"
+			(( ch == 0 || (ch - base) / 4 % 2 == 0 )) || dir="[HT40-]"
+			c=$(( ch - (ch - base) % 16 + 6 ))
+			echo "ht_capab=$(ht_capab "$ht" "$dir")"
+			echo "ieee80211ac=1"
+			echo "vht_capab=$(vht_capab "$vht")"
+			echo "vht_oper_chwidth=1"
+			(( ch == 0 )) || echo "vht_oper_centr_freq_seg0_idx=$c"
+			if (( he )); then
+				echo "he_oper_chwidth=1"
+				(( ch == 0 )) || echo "he_oper_centr_freq_seg0_idx=$c"
+			fi
+		else
+			echo "ht_capab=$(ht_capab "$ht")"
+		fi
+		;;
+	6g)
+		# 80 MHz: operating class 133, centred in blocks of 16 from channel 1
+		echo "hw_mode=a"
+		echo "op_class=133"
+		echo "he_oper_chwidth=1"
+		(( ch == 0 )) || echo "he_oper_centr_freq_seg0_idx=$(( (ch - 1) / 16 * 16 + 7 ))"
+		;;
+	esac
+	if (( he )); then
+		echo "ieee80211ax=1"
+		echo "he_su_beamformer=$su"
+		echo "he_su_beamformee=$sue"
+		echo "he_mu_beamformer=$mu"
+	fi
+}
+
+start() {
+	local a b p n i d units=()
+	check_settings
+	wait_radios
+	place
+	if (( ! ${#assign[@]} )); then
+		echo "no access points to start"
+		return
+	fi
+	rm -rf "$run"
+	mkdir -p "$run"
+	# the radios' current interfaces (the drivers' wlan0, ...) make way
+	for d in /sys/class/net/*/phy80211; do
+		[[ -e $d ]] || continue
+		p=$(basename "$(readlink -f "$d")")
+		(( ${used[$p]:-0} )) && iw dev "$(basename "${d%/phy80211}")" del
+	done
+	for a in "${assign[@]}"; do
+		read -r b p n <<< "$a"
+		i=wlan$b
+		iw phy "$p" interface add "$i" type __ap || die "can't add $i on $p"
+		ip link set "$i" address "$(mac "$p" "$n")" || die "can't set $i's MAC address"
+		if [[ -r /etc/hostapd/$i.conf ]]; then
+			echo "$b: $i on $p, with /etc/hostapd/$i.conf"
+			cp "/etc/hostapd/$i.conf" "$run/"
+		else
+			echo "$b: $i on $p"
+			conf "$b" "$p" "$i" > "$run/$i.conf"
+		fi
+		units+=("wifi-ap@$i.service")
+	done
+	# networkd makes the bridge; hostapd would make a bare one
+	if [[ -n $BRIDGE ]]; then
+		for _ in $(seq 20); do
+			[[ -e /sys/class/net/$BRIDGE ]] && break
+			sleep 0.5
+		done
+	fi
+	systemctl --no-block start "${units[@]}"
+}
+
+stop() {
+	local f
+	for f in "$run"/*.conf; do
+		[[ -e $f ]] || continue
+		f=${f##*/}
+		iw dev "${f%.conf}" del 2>/dev/null
+	done
+	rm -rf "$run"
+}
+
+plan() {
+	local a b p n
+	check_settings
+	wait_radios
+	for p in /sys/class/ieee80211/*; do
+		[[ -e $p ]] || continue
+		p=${p##*/}
+		echo "$p:$(phy_bands "$p")($(phy_channels "$p") at once)"
+	done
+	place
+	for a in "${assign[@]}"; do
+		read -r b p n <<< "$a"
+		echo
+		echo "== $b: wlan$b on $p, $(mac "$p" "$n")"
+		if [[ -r /etc/hostapd/wlan$b.conf ]]; then
+			echo "(/etc/hostapd/wlan$b.conf)"
+		else
+			conf "$b" "$p" "wlan$b" | sed 's/^wpa_passphrase=.*/wpa_passphrase=(set)/'
+		fi
+	done
+}
+
+case ${1:-} in
+	start) start ;;
+	stop) stop ;;
+	plan) plan ;;
+	*) die "usage: wifi-ap start|stop|plan" ;;
+esac

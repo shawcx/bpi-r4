@@ -1,0 +1,12 @@
+# BPI-R4 Pro WAN: gmac1 (eth1 on 7.2), whichever port the build's --ports
+# overlay puts it on: the 8X's 10G combo (AS21010 RJ45 or SFP2), the 4E's
+# 2.5G RJ45 or SFP2. The kernel randomizes the gmac MACs on every boot, and
+# the catch-all 01-ifnames.link (overlays/common) would keep 99-default.link's
+# persistent policy from applying, so set it here: a MAC derived from the
+# machine-id keeps the WAN DHCP lease across reboots.
+[Match]
+Property=OF_FULLNAME=/soc/ethernet@15100000/mac@1
+
+[Link]
+NamePolicy=kernel
+MACAddressPolicy=persistent

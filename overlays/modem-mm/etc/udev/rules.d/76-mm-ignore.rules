@@ -1,0 +1,9 @@
+# Devices ModemManager leaves alone (build config MODEM=mm): it would open
+# their serial ports and send AT commands, probing for a modem
+# - Linux USB gadgets (1d6b:01xx): another board's serial console and
+#   network. Product IDs matter: the root hubs, 1d6b:000x, sit above every
+#   USB device
+# - u-blox GNSS receivers (1546:01ax), which gpsd reads; u-blox's cellular
+#   modules have other product IDs
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="01*", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="1546", ATTRS{idProduct}=="01a*", ENV{ID_MM_DEVICE_IGNORE}="1"

@@ -1,0 +1,31 @@
+#!/bin/sh
+# Grow the root partition and its ext4 filesystem into free space at the end
+# of the disk: the image is smaller than most SD cards (and leaves ~750MB of
+# the 8GB eMMC unused). Run at boot by grow-rootfs.service; a no-op once root
+# fills the disk, so in practice it only acts on the first boot.
+set -eu
+
+src=$(findmnt -no SOURCE /)
+part=${src#/dev/}
+disk=$(lsblk -no PKNAME "$src")
+num=$(cat /sys/class/block/"$part"/partition)
+start=$(cat /sys/class/block/"$part"/start)
+end=$((start + $(cat /sys/class/block/"$part"/size)))
+# sysfs counts 512-byte sectors; GPT keeps 33 at the end for its backup
+free=$(($(cat /sys/class/block/"$disk"/size) - 33 - end))
+if [ "$free" -lt 2048 ]; then
+	exit 0
+fi
+for p in /sys/class/block/"$disk"/"$disk"*/start; do
+	if [ "$(cat "$p")" -gt "$start" ]; then
+		echo "root is not the last partition on /dev/$disk, not growing it" >&2
+		exit 1
+	fi
+done
+
+echo "growing $src by $((free / 2048))MiB"
+# a written image keeps its backup GPT at the image's end, not the disk's
+sfdisk --relocate gpt-bak-std /dev/"$disk"
+echo ',+' | sfdisk --no-reread --no-tell-kernel -N "$num" /dev/"$disk"
+partx -u /dev/"$disk"
+resize2fs "$src"

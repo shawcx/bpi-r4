@@ -1,0 +1,9 @@
+# The kernel comes from frank-w's BPI-Router-Linux builds (bpi-r4.itb on
+# /boot plus /lib/modules), not from a distro package. A Debian or Ubuntu
+# kernel would land in /boot in a form u-boot doesn't boot and bring the
+# initramfs/flash-kernel machinery with it, so apt must never install one,
+# not even as a dependency. linux-libc-dev, linux-base and
+# linux-sysctl-defaults stay installable.
+Package: linux-image* linux-headers* linux-modules* linux-kbuild* linux-signed* linux-generic* flash-kernel
+Pin: release *
+Pin-Priority: -1

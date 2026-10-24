@@ -1,0 +1,3 @@
+# BPI-R4 Pro 8X as a switch: every port in one bridge with a DHCP lease
+CONFIG_ROLE_SWITCH=y
+CONFIG_IMAGE_TAG="switch"

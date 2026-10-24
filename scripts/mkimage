@@ -1,0 +1,455 @@
+#!/bin/bash
+# Build a BPI-R4 / R4 Pro image from scripts/fetch's downloads, scripts/rootfs's
+# tarball and the config (the CONFIG_* variables build.sh exports, see Kconfig):
+# - u-boot's image for the board and boot device as the base (UBOOT_IMG): its
+#   partition table, bl2, fip and empty BPI-BOOT (vfat) and BPI-ROOT (ext4)
+#   filesystems. 8GB boards get the same release's 8GB fip (UBOOT_FIP) and, on
+#   sdmmc, bl2 (UBOOT_BL2), once the base image's stock bl2 (UBOOT_BL2_STOCK,
+#   sdmmc) or fip (UBOOT_FIP_STOCK, emmc, whose bl2 partition is empty) shows
+#   it came from that release
+# - BPI-BOOT: the kernel's FIT image (KERNEL_TAR) and uEnv.txt with the UENV
+#   lines and an addconf of the DT_OVERLAYS the FIT has
+# - BPI-ROOT: the rootfs (ROOTFS_TAR), the kernel's modules, linux-firmware's
+#   aeonsemi, airoha and mediatek directories (FIRMWARE_DIR; no mt7996 with
+#   monitor-only Wi-Fi) and wireless-regdb (REGDB_DIR)
+# - packages: the distribution's updates; openssh-server, iw, xz-utils,
+#   wireguard-tools, exfatprogs, locales, nftables with the firewall and
+#   hostapd for the Wi-Fi AP, without
+#   recommends; PACKAGES; the development tools (install-devtools) with
+#   CONFIG_PKG_DEVTOOLS; and systemd-resolved last, as the chroot can't
+#   resolve names after it
+# - overlays/<name>/ copied for each name in OVERLAYS, in order: common,
+#   r4pro (R4 Pro WAN MAC, LAN bridge ports), r4pro4e (4E WAN PHY), gps (device
+#   and offset from the config), router (IPv4 forwarding), firewall (nftables
+#   NAT/firewall), wifi-ap (wifi-ap and its units), wifi-guest (the guest
+#   Wi-Fi firewall), modem-mm (ModemManager's connection dispatcher,
+#   modem-connect)
+# - Wi-Fi (CONFIG_WIFI): monitor: MT7915/MT7916 (mt7915e) cards in monitor
+#   mode only, the BE14's mt7996e blacklisted; ap: wifi-ap's settings
+#   (/etc/default/wifi-ap, root only), the wlanbr0 subnet with
+#   WIFI_NET_SUBNET, wifi-ap.service enabled; off: mt7915e and mt7996e
+#   blacklisted
+# - network role: router (WAN DHCP, LAN bridge address and DHCP server,
+#   nftables enabled with FIREWALL) or switch (WAN in the LAN bridge, which
+#   takes a DHCP lease); WAN_MATCH is the WAN's networkd [Match]
+# - cellular modem (CONFIG_MODEM): ModemManager with modem-connect; phones
+#   and ECM modems on USB (CONFIG_USB_WAN): networkd DHCP, as backup routes
+# - locales (CONFIG_LOCALES), the first as LANG
+# - hostname, regulatory domain, root password (console only; ROOT_PASSWORD
+#   overrides the config's), root SSH with keys from the AUTHORIZED_KEYS file
+# - UTC, SSH host keys, machine-id and (with ssl-cert) the snakeoil TLS key
+#   made on first boot, root partition grown to fill the SD card/eMMC on
+#   first boot
+# Only BPI-ROOT is loop-mounted (ext4 needs root); the rest is written
+# through partition offsets in the image file.
+# usage: scripts/mkimage <image.img> [report-dir]
+#   report-dir gets the image's package list (packages) and uEnv.txt
+set -euo pipefail
+
+top=$(cd "$(dirname "$0")/.." && pwd)
+if [[ -z ${CONFIG_BOARD:-} ]]; then
+	echo "run from build.sh (needs its CONFIG_* and download variables)" >&2
+	exit 1
+fi
+keys=$CONFIG_AUTHORIZED_KEYS
+[[ $keys == /* ]] || keys=$top/$keys
+# without a key nobody could SSH in (password login is disabled)
+if ! grep -qE '^(ssh-|ecdsa-|sk-)' "$keys"; then
+	echo "no SSH public keys in $keys" >&2
+	exit 1
+fi
+img=$1
+report=${2:-}
+# the config's password unless ROOT_PASSWORD is set
+ROOT_PASSWORD=${ROOT_PASSWORD:-${CONFIG_ROOT_PASSWORD:-}}
+# and the config's Wi-Fi passphrase unless WIFI_PASSPHRASE is set
+wifi_passphrase=${WIFI_PASSPHRASE:-${CONFIG_WIFI_PASSPHRASE:-}}
+root_password=${ROOT_PASSWORD:-root}
+export MTOOLS_SKIP_CHECK=1
+
+mnt=$(mktemp -d)
+kdir=$(mktemp -d)
+ldev=
+# on failure; a finished image is unmounted below, where a busy mount
+# stops the build rather than leave the filesystem unflushed
+cleanup() {
+	sudo umount "$mnt/var/cache/apt/archives" "$mnt/proc" "$mnt/dev" "$mnt" 2>/dev/null || true
+	[[ -z $ldev ]] || sudo losetup -d "$ldev"
+	rmdir "$mnt"
+	rm -rf "$kdir"
+}
+trap cleanup EXIT
+
+echo "base image $(basename "$UBOOT_IMG") from $UBOOT_RELEASE..."
+# sparse: most of it is the empty root filesystem
+pigz -dc "$UBOOT_IMG" | dd of="$img" bs=1M iflag=fullblock conv=sparse status=none
+# R4 and R4 Pro sdmmc/emmc layout: p1 = bl2 (empty on emmc, which boots bl2
+# from its boot0 partition), p4 = fip, p5 = BPI-BOOT, p6 = BPI-ROOT
+part() { # <number>: start and size in 512-byte sectors
+	partx -g -o START,SECTORS -n "$1" "$img"
+}
+stock_check() { # <stock file> <partition>
+	local p start size
+	p=$(part "$2")
+	read -r start size <<< "$p"
+	if ! cmp -s -n "$(stat -c %s "$1")" "$1" "$img" 0 $((start * 512)); then
+		echo "base image p$2 is not from the same u-boot release as $(basename "$1")" >&2
+		exit 1
+	fi
+}
+write_part() { # <file> <partition>
+	local p start size
+	p=$(part "$2")
+	read -r start size <<< "$p"
+	if (( $(stat -c %s "$1") > size * 512 )); then
+		echo "$(basename "$1") doesn't fit p$2" >&2
+		exit 1
+	fi
+	dd if="$1" of="$img" bs=512 seek="$start" conv=notrunc,fsync status=none
+}
+[[ -z $UBOOT_BL2_STOCK ]] || stock_check "$UBOOT_BL2_STOCK" 1
+[[ -z $UBOOT_FIP_STOCK ]] || stock_check "$UBOOT_FIP_STOCK" 4
+if [[ -n $UBOOT_BL2 ]]; then
+	echo "writing 8GB bl2..."
+	write_part "$UBOOT_BL2" 1
+fi
+if [[ -n $UBOOT_FIP ]]; then
+	echo "writing 8GB fip..."
+	write_part "$UBOOT_FIP" 4
+fi
+
+echo "kernel $(basename "$KERNEL_TAR") from $KERNEL_RELEASE..."
+p5=$(part 5)
+read -r boot_start _ <<< "$p5"
+boot=$img@@$((boot_start * 512))
+tar -C "$kdir" -xzf "$KERNEL_TAR" BPI-BOOT
+mcopy -i "$boot" -m -o "$kdir"/BPI-BOOT/* ::/
+# the FIT's overlays differ between kernels: 6.18 has no ov-pro-cn14 (its DT
+# defaults CN14 to key-m) nor the 8X/4E port overlays (it muxes the 8X combo
+# ports itself); drop what it lacks rather than rely on u-boot skipping it
+addconf=
+for ov in $DT_OVERLAYS; do
+	if grep -qaF -- "$ov" "$kdir/BPI-BOOT/bpi-r4.itb"; then addconf+="#$ov"
+	else echo "dropping overlay $ov (not in kernel FIT)"; fi
+done
+{
+	echo "# board settings and device tree overlays (build.sh)"
+	[[ -z $UENV ]] || printf '%s\n' "$UENV"
+	[[ -z $addconf ]] || echo "addconf=$addconf"
+} > "$kdir/uEnv.txt"
+mcopy -i "$boot" -o "$kdir/uEnv.txt" ::/uEnv.txt
+[[ -z $report ]] || cp "$kdir/uEnv.txt" "$report/uEnv.txt"
+
+echo "rootfs $(basename "$ROOTFS_TAR")..."
+p6=$(part 6)
+read -r root_start root_size <<< "$p6"
+ldev=$(sudo losetup -f --show -o $((root_start * 512)) --sizelimit $((root_size * 512)) "$img")
+sudo mount "$ldev" "$mnt"
+sudo tar -C "$mnt" --xattrs --xattrs-include='*' --numeric-owner -I pigz -xpf "$ROOTFS_TAR"
+sudo tar -C "$mnt/lib/." --strip-components=2 -xzf "$KERNEL_TAR" BPI-ROOT/lib/
+# mmcblk0 for both: the SD card and eMMC share the one controller
+sudo tee "$mnt/etc/fstab" >/dev/null <<EOF
+# <file system>	<dir>	<type>	<options>		<dump>	<pass>
+/dev/mmcblk0p5	/boot	vfat	errors=remount-ro	0	1
+/dev/mmcblk0p6	/	ext4	defaults		0	0
+EOF
+
+sudo mount --bind /dev "$mnt/dev"
+# downloaded packages stay outside the image, which would otherwise need room
+# for them on top of what they install, and later builds reuse them: a cache
+# per distribution on the build host
+debs=$top/.cache/apt/$CONFIG_DISTRO
+mkdir -p "$debs/partial"
+sudo mount --bind "$debs" "$mnt/var/cache/apt/archives"
+sudo mount -t proc proc "$mnt/proc"
+in_chroot() {
+	sudo chroot "$mnt" /usr/bin/env LC_ALL=C DEBIAN_FRONTEND=noninteractive "$@"
+}
+# names resolve through the host's resolver until systemd-resolved goes in
+sudo cp --remove-destination /etc/resolv.conf "$mnt/etc/resolv.conf"
+d=$CONFIG_DISTRO
+case "$d" in
+	noble|resolute) comp="main restricted universe multiverse"
+		suites="$d $d-updates $d-security $d-backports"
+		security= ;;
+	*) comp="main contrib non-free non-free-firmware"
+		suites="$d $d-updates"
+		security="deb http://security.debian.org/debian-security $d-security $comp" ;;
+esac
+# no deb-src: install-devtools adds them when it's run
+{
+	for s in $suites; do echo "deb $CONFIG_MIRROR $s $comp"; done
+	[[ -z $security ]] || echo "$security"
+} | sudo tee "$mnt/etc/apt/sources.list" >/dev/null
+
+echo "packages..."
+in_chroot apt-get update
+in_chroot apt-get -y upgrade
+# openssh-server first and without recommends (xauth, X11 libraries,
+# ncurses-term), so PACKAGES' ssh doesn't bring them; wireguard-tools
+# recommends a distribution kernel's modules or wireguard-dkms
+sys="openssh-server iw xz-utils wireguard-tools exfatprogs locales"
+[[ -z $CONFIG_FIREWALL ]] || sys+=" nftables"
+[[ $CONFIG_WIFI != ap ]] || sys+=" hostapd"
+# shellcheck disable=SC2086
+in_chroot apt-get -y install --no-install-recommends $sys
+# shellcheck disable=SC2086
+in_chroot apt-get -y install $PACKAGES
+
+# CONFIG_LOCALES, the first as LANG. Debian's locale-gen builds what
+# /etc/locale.gen lists; Ubuntu's takes them as arguments
+if [[ -n $CONFIG_LOCALES ]]; then
+	echo "locales: $CONFIG_LOCALES..."
+	gen=$mnt/etc/locale.gen
+	if [[ -e $gen ]] && grep -qE '^# *[a-z]{2}_' "$gen"; then
+		for l in $CONFIG_LOCALES; do
+			re=${l//./\\.}
+			grep -qE "^(# *)?$re " "$gen" || { echo "unknown locale $l" >&2; exit 1; }
+			sudo sed -i -E "s/^# *($re .*)/\\1/" "$gen"
+		done
+		in_chroot locale-gen
+	else
+		# shellcheck disable=SC2086
+		in_chroot locale-gen $CONFIG_LOCALES
+	fi
+	in_chroot update-locale LANG="${CONFIG_LOCALES%% *}"
+fi
+
+echo "firmware (linux-firmware $FIRMWARE_COMMIT)..."
+fw=$mnt/lib/firmware
+sudo mkdir -p "$fw"
+sudo cp -r "$FIRMWARE_DIR"/* "$fw"/
+# monitor-only Wi-Fi: no BE14 (mt7996) firmware
+[[ $CONFIG_WIFI != monitor ]] || sudo rm -rf "$fw/mediatek/mt7996"
+# wireless-regdb's own, signed with the key the kernel trusts
+sudo install -m 644 "$REGDB_DIR/regulatory.db" "$fw/regulatory.db-git"
+sudo install -m 644 "$REGDB_DIR/regulatory.db.p7s" "$fw/regulatory.db.p7s-git"
+in_chroot update-alternatives --install /lib/firmware/regulatory.db regulatory.db \
+	/lib/firmware/regulatory.db-git 200 \
+	--slave /lib/firmware/regulatory.db.p7s regulatory.db.p7s /lib/firmware/regulatory.db.p7s-git
+in_chroot update-alternatives --set regulatory.db /lib/firmware/regulatory.db-git
+
+for o in $OVERLAYS; do
+	echo "overlay $o..."
+	sudo cp -r "$top/overlays/$o"/. "$mnt"/
+done
+if [[ -n $CONFIG_GPS_TIME ]]; then
+	sudo sed -i "s#^DEVICES=.*#DEVICES=\"$CONFIG_GPS_DEVICE\"#" "$mnt"/etc/default/gpsd
+	sudo sed -i "s#^\(refclock SHM 0 .*offset \)[-0-9.]*#\1$CONFIG_GPS_OFFSET#" "$mnt"/etc/chrony/conf.d/gpsd.conf
+fi
+
+echo "Wi-Fi: $CONFIG_WIFI..."
+case "$CONFIG_WIFI" in
+	monitor) echo "blacklist mt7996e" | sudo tee "$mnt/etc/modprobe.d/no-mt7996.conf" >/dev/null ;;
+	ap)
+		q() { printf "'%s'" "${1//\'/\'\\\'\'}"; } # single-quoted for sh
+		bands=
+		[[ -z $CONFIG_WIFI_5G ]] || bands+=" 5g"
+		[[ -z $CONFIG_WIFI_6G ]] || bands+=" 6g"
+		[[ -z $CONFIG_WIFI_2G4 ]] || bands+=" 2g4"
+		bridge=lanbr0
+		[[ -z $CONFIG_WIFI_NET_SUBNET ]] || bridge=wlanbr0
+		# root only: it has the passphrase
+		sudo install -m 600 /dev/null "$mnt"/etc/default/wifi-ap
+		sudo tee "$mnt"/etc/default/wifi-ap >/dev/null <<EOF
+# Wi-Fi access points (scripts/mkimage, from the build config), for wifi-ap;
+# run "systemctl restart wifi-ap" after changing them
+# - BANDS: 5g, 6g and 2g4, which get radios in that order
+# - CHANNEL_*: 0 for automatic
+# - WPA3_ONLY: yes or no; 6 GHz is always WPA3 only
+# - BRIDGE: lanbr0 (the LAN) or wlanbr0 (the Wi-Fi subnet)
+SSID=$(q "${CONFIG_WIFI_SSID:-$CONFIG_HOSTNAME}")
+PASSPHRASE=$(q "$wifi_passphrase")
+COUNTRY=$CONFIG_REGDOM
+BANDS="${bands# }"
+CHANNEL_5G=${CONFIG_WIFI_CHANNEL_5G:-36}
+CHANNEL_6G=${CONFIG_WIFI_CHANNEL_6G:-37}
+CHANNEL_2G4=${CONFIG_WIFI_CHANNEL_2G4:-1}
+WPA3_ONLY=$([[ -n $CONFIG_WIFI_WPA3_ONLY ]] && echo yes || echo no)
+BRIDGE=$bridge
+EOF
+		if [[ -n $CONFIG_WIFI_NET_SUBNET ]]; then
+			sudo tee "$mnt"/etc/systemd/network/30-wlanbr.netdev >/dev/null <<EOF
+# Wi-Fi subnet bridge (scripts/mkimage, from the build config): hostapd adds
+# wifi-ap's access points
+[NetDev]
+Name=wlanbr0
+Kind=bridge
+EOF
+			sudo tee "$mnt"/etc/systemd/network/31-wlanbr.network >/dev/null <<EOF
+# Wi-Fi subnet (scripts/mkimage, from the build config), up before the access
+# points are
+[Match]
+Name=wlanbr0
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+Address=$CONFIG_WIFI_ADDRESS
+ConfigureWithoutCarrier=yes
+DHCPServer=yes
+
+[DHCPServer]
+PoolOffset=100
+PoolSize=150
+EOF
+		fi
+		in_chroot systemctl enable wifi-ap.service ;;
+	off) printf 'blacklist %s\n' mt7915e mt7996e | sudo tee "$mnt/etc/modprobe.d/no-wifi.conf" >/dev/null ;;
+esac
+
+# WAN and LAN bridge for the role (forwarding is overlays/router's sysctl);
+# the bridge members are overlays/common's or the board overlay's
+# 21-lanbr-bind.network
+echo "network: $CONFIG_ROLE..."
+if [[ $CONFIG_ROLE == router ]]; then
+	wan="DHCP=ipv4"
+	lan="Address=$CONFIG_LAN_ADDRESS"
+	[[ -z $CONFIG_DHCP_SERVER ]] ||
+		lan+=$'\nDHCPServer=yes\n\n[DHCPServer]\nPoolOffset=100\nPoolSize=150'
+else
+	wan="Bridge=lanbr0"
+	lan="DHCP=ipv4"
+fi
+sudo tee "$mnt"/etc/systemd/network/15-wan.network >/dev/null <<EOF
+# WAN, $CONFIG_ROLE role (scripts/mkimage, from the build config)
+[Match]
+$WAN_MATCH
+
+[Network]
+$wan
+EOF
+sudo tee "$mnt"/etc/systemd/network/25-lanbr.network >/dev/null <<EOF
+# LAN bridge, $CONFIG_ROLE role (scripts/mkimage, from the build config)
+[Match]
+Name=lanbr0
+
+[Network]
+$lan
+EOF
+in_chroot systemctl enable systemd-networkd
+if [[ -n $CONFIG_FIREWALL ]]; then
+	[[ -n $CONFIG_SSH_FROM_WAN ]] || sudo sed -i '/SSH from the WAN/d' "$mnt"/etc/nftables.conf
+	in_chroot systemctl enable nftables.service
+fi
+# cellular modem: ModemManager (overlays/modem-mm)
+case "$CONFIG_MODEM" in
+	mm)
+		sudo tee "$mnt"/etc/default/modem >/dev/null <<EOF
+# Cellular modem (scripts/mkimage, from the build config): the APN for
+# modem-connect (empty: the network's default) and the default route's metric
+APN="$CONFIG_MODEM_APN"
+METRIC=$CONFIG_BACKUP_METRIC
+EOF
+		in_chroot systemctl enable ModemManager.service modem-connect.service ;;
+esac
+# phones and ECM modems on USB: a DHCP lease, as a backup route
+if [[ -n $CONFIG_USB_WAN ]]; then
+	sudo tee "$mnt"/etc/systemd/network/40-usb-wan.network >/dev/null <<EOF
+# Phones and ECM modems on USB (scripts/mkimage, from the build config): a DHCP
+# lease with metric $CONFIG_BACKUP_METRIC (the WAN's is 1024). Android tethering is RNDIS,
+# NCM or ECM, iPhone tethering ipheth
+[Match]
+Driver=rndis_host cdc_ether cdc_ncm ipheth
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+DHCP=yes
+
+[DHCPv4]
+RouteMetric=$CONFIG_BACKUP_METRIC
+
+[IPv6AcceptRA]
+RouteMetric=$CONFIG_BACKUP_METRIC
+EOF
+fi
+
+echo "system settings..."
+echo "$CONFIG_HOSTNAME" | sudo tee "$mnt"/etc/hostname >/dev/null
+sudo tee "$mnt"/etc/hosts >/dev/null <<EOF
+127.0.0.1	localhost
+127.0.1.1	$CONFIG_HOSTNAME
+::1		localhost ip6-localhost ip6-loopback
+ff02::1		ip6-allnodes
+ff02::2		ip6-allrouters
+EOF
+if [[ -n $CONFIG_REGDOM ]]; then
+	echo "options cfg80211 ieee80211_regdom=$CONFIG_REGDOM" | sudo tee "$mnt"/etc/modprobe.d/cfg80211.conf >/dev/null
+fi
+sudo ln -sf /usr/share/zoneinfo/Etc/UTC "$mnt"/etc/localtime
+echo "root:$root_password" | sudo chroot "$mnt" chpasswd
+
+# root SSH: keys only (sshd_config.d/10-endpoint.conf)
+sudo install -d -m 700 "$mnt"/root/.ssh
+grep -E '^(ssh-|ecdsa-|sk-)' "$keys" | sudo tee "$mnt"/root/.ssh/authorized_keys >/dev/null
+sudo chmod 600 "$mnt"/root/.ssh/authorized_keys
+
+# host keys from the build would be shared by every board flashed from this
+# image; ssh-hostkeys.service regenerates them on first boot
+sudo rm -f "$mnt"/etc/ssh/ssh_host_*
+in_chroot systemctl enable ssh-hostkeys.service
+# same for the machine-id (DHCP DUIDs, persistent MACs): systemd fills an
+# empty one in at boot. Empty, unlike missing, isn't a "first boot", so no
+# preset-all runs. dbus reads it through the usual symlink
+sudo truncate -s 0 "$mnt"/etc/machine-id
+sudo mkdir -p "$mnt"/var/lib/dbus
+sudo ln -sf /etc/machine-id "$mnt"/var/lib/dbus/machine-id
+# the image is smaller than the SD card/eMMC it's written to
+in_chroot systemctl enable grow-rootfs.service
+
+if [[ -n $CONFIG_PKG_DEVTOOLS ]]; then
+	echo "development tools..."
+	in_chroot /usr/local/sbin/install-devtools
+fi
+
+echo "systemd-resolved..."
+in_chroot apt-get -y install systemd-resolved
+in_chroot systemctl enable systemd-resolved
+# its postinst normally does this; the host's resolv.conf mustn't stay
+[[ -L $mnt/etc/resolv.conf ]] ||
+	sudo ln -sf ../run/systemd/resolve/stub-resolv.conf "$mnt"/etc/resolv.conf
+# (no apt-get clean: the downloaded packages are the build host's cache)
+
+# systemd-zram-generator makes no zram device without a config: half the
+# RAM, up to 4 GB, zstd
+gen=/usr/lib/systemd/system-generators/zram-generator
+if [[ -e $mnt$gen && ! -e $mnt/etc/systemd/zram-generator.conf && ! -e $mnt/usr/lib/systemd/zram-generator.conf ]]; then
+	sudo tee "$mnt"/etc/systemd/zram-generator.conf >/dev/null <<EOF
+# zram swap (scripts/mkimage): half the RAM, up to 4 GB, compressed with zstd
+[zram0]
+zram-size = min(ram / 2, 4096)
+compression-algorithm = zstd
+EOF
+fi
+
+# like the SSH host keys: ssl-cert's snakeoil key (web servers, VPNs) would be
+# shared by every board, so ssl-snakeoil.service makes one on first boot
+if [[ -e $mnt/usr/sbin/make-ssl-cert ]]; then
+	sudo rm -f "$mnt"/etc/ssl/private/ssl-cert-snakeoil.key "$mnt"/etc/ssl/certs/ssl-cert-snakeoil.pem
+	in_chroot systemctl enable ssl-snakeoil.service
+fi
+
+if [[ $CONFIG_WIFI == monitor ]]; then
+	for f in mt7915_wa mt7915_wm mt7915_rom_patch mt7916_wa mt7916_wm mt7916_rom_patch; do
+		if [[ ! -e "$fw/mediatek/$f.bin" ]]; then
+			echo "missing firmware mediatek/$f.bin" >&2
+			exit 1
+		fi
+	done
+fi
+
+if [[ -n $report ]]; then
+	sudo chroot "$mnt" dpkg-query -W -f='${Package} ${Version} ${Architecture}\n' > "$report/packages"
+fi
+sudo umount "$mnt/var/cache/apt/archives" "$mnt/proc" "$mnt/dev"
+# apt's package lists' binary caches, rebuilt on the board's first apt run
+sudo rm -f "$mnt"/var/cache/apt/*.bin
+# apt (root, _apt) wrote the cache; keep it the build user's
+sudo chown -R "$(id -u):$(id -g)" "$debs"
+sudo umount "$mnt"
+sudo losetup -d "$ldev"
+ldev=
+echo "image done"

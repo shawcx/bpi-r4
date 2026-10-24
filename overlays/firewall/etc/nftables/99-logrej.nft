@@ -1,0 +1,24 @@
+# Log (at most 10 a minute) and reject what the input and forward chains
+# don't accept, rather than drop it silently; broadcasts and multicasts are
+# dropped without a log
+table inet filter {
+	chain input {
+		#limit rate 10/minute counter log prefix "NF-REJECTED: " level debug
+		goto rejectlog
+	}
+	chain forward {
+		#limit rate 10/minute counter log prefix "NF-REJECTED: " level debug
+		goto rejectlog
+	}
+	chain output {
+		#limit rate 10/minute counter log prefix "NF-REJECTED: " level debug
+		#goto reject
+	}
+	chain rejectlog {
+		# broadcasts and multicasts (discovery chatter): dropped quietly,
+		# there's no one to send a reject to
+		meta pkttype { broadcast, multicast } drop
+		limit rate 10/minute counter log prefix "NF-REJECTED: " level debug
+		reject
+	}
+}

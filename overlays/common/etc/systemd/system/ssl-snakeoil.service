@@ -1,0 +1,14 @@
+[Unit]
+Description=Generate this board's snakeoil TLS certificate on first boot
+# ssl-cert's key, made at install, would be the same on every board flashed
+# from the image: scripts/mkimage deletes it
+ConditionPathExists=/usr/sbin/make-ssl-cert
+ConditionPathExists=!/etc/ssl/private/ssl-cert-snakeoil.key
+Before=nginx.service apache2.service lighttpd.service ocserv.service postfix.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/make-ssl-cert generate-default-snakeoil --force-overwrite
+
+[Install]
+WantedBy=multi-user.target

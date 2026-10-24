@@ -1,0 +1,5 @@
+# LAN bridge: members in 21-lanbr-bind.network, addresses in
+# 25-lanbr.network (scripts/mkimage, from the network role)
+[NetDev]
+Name=lanbr0
+Kind=bridge

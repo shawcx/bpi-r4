@@ -1,0 +1,8 @@
+# Cellular data interfaces (build config MODEM=mm): ModemManager's connection
+# dispatcher (/etc/ModemManager/connection.d/10-wwan) configures them, so
+# networkd leaves them alone
+[Match]
+Name=wwan* mhi_hwip*
+
+[Link]
+Unmanaged=yes

@@ -1,0 +1,1569 @@
+# Image options for build.sh: make menuconfig / make <name>_defconfig,
+# see the Makefile. The defaults build today's "endpoint" image for the
+# BPI-R4 Pro 8X; configs/*_defconfig hold the other boards.
+
+mainmenu "BPI-R4 image configuration"
+
+choice
+	prompt "Board"
+	default BOARD_R4PRO_8X
+
+config BOARD_R4PRO_8X
+	bool "BPI-R4 Pro 8X"
+	help
+	  BPI-R4 Pro 8X: MxL862xx switch (lan1-4, lan6 combo), MT7988
+	  switch (lan5), 10G combo WAN.
+
+config BOARD_R4PRO_4E
+	bool "BPI-R4 Pro 4E"
+	help
+	  BPI-R4 Pro 4E: shares the R4 Pro u-boot and image; its u-boot
+	  release defaults to the 2026.07 CI build, the first that knows
+	  isr4pro4e=1 (its FIT config). Needs kernel 7.2.
+
+config BOARD_R4
+	bool "BPI-R4 (2x SFP)"
+	help
+	  The standard BPI-R4 with two SFP cages (not the 2g5 variant).
+
+endchoice
+
+config BOARD
+	string
+	default "r4pro" if BOARD_R4PRO_8X
+	default "r4pro4e" if BOARD_R4PRO_4E
+	default "r4" if BOARD_R4
+
+choice
+	prompt "Boot device"
+	default DEVICE_SDMMC
+
+config DEVICE_SDMMC
+	bool "SD card"
+
+config DEVICE_EMMC
+	bool "eMMC"
+	help
+	  Also writes <image>_bl2.img, the bl2 for the eMMC boot0 hardware
+	  partition (the image's own bl2 partition is empty on eMMC).
+
+endchoice
+
+config DEVICE
+	string
+	default "emmc" if DEVICE_EMMC
+	default "sdmmc"
+
+choice
+	prompt "RAM"
+	default RAM_8G if BOARD_R4PRO_8X
+	default RAM_4G
+
+config RAM_4G
+	bool "4 GB"
+
+config RAM_8G
+	bool "8 GB"
+	help
+	  Writes u-boot's 8GB bl2 and fip into the image.
+
+endchoice
+
+config RAM
+	int
+	default 8 if RAM_8G
+	default 4
+
+choice
+	prompt "Kernel"
+	default KERNEL_7_2 if BOARD_R4PRO_4E
+	default KERNEL_6_18
+	help
+	  frank-w's BPI-Router-Linux CI builds of this branch.
+
+config KERNEL_6_18
+	bool "6.18 (LTS)"
+	depends on !BOARD_R4PRO_4E
+	help
+	  Long-term branch with point releases. Has no 4E device tree
+	  overlays.
+
+config KERNEL_7_2
+	bool "7.2"
+	help
+	  Newest branch: adds the 8X LAN/WAN and 4E WAN PHY/SFP overlays and
+	  per-slot M.2 overlays. Names the gmacs eth0-2 (WAN on eth1).
+
+endchoice
+
+config KERNEL
+	string
+	default "7.2" if KERNEL_7_2
+	default "6.18"
+
+choice
+	prompt "Kernel build"
+	default KERNEL_SOURCE
+
+config KERNEL_CI
+	bool "frank-w's CI build"
+	help
+	  The branch's latest CI build from frank-w/BPI-Router-Linux
+	  releases, or the one pinned under Releases. His defconfig has no
+	  WireGuard or exFAT, nor the rest of kernel/features.config.
+
+config KERNEL_SOURCE
+	bool "Built from source"
+	help
+	  scripts/kernel builds frank-w's tree (or a fork, a local tree,
+	  patches, config changes; see Kernel source) the way his CI does:
+	  the bpi-r4.itb FIT image with the board device trees and overlays,
+	  and the modules. Cross-compiled on x86_64 (gcc-aarch64-linux-gnu),
+	  native on arm64; incremental, in .cache/kernel. make kernel builds
+	  just the kernel, make kernel-menuconfig configures it. The default,
+	  for kernel/features.config (WireGuard, exFAT, ...).
+
+endchoice
+
+menu "Kernel source"
+	depends on KERNEL_SOURCE
+
+config KERNEL_GIT
+	string "Git repository"
+	default "https://github.com/frank-w/BPI-Router-Linux.git"
+	help
+	  Fetched shallowly at the ref below; a fork or a local repository
+	  (path) works too.
+
+config KERNEL_REF
+	string "Branch, tag or commit"
+	help
+	  Empty: the kernel branch's <branch>-main, e.g. 7.2-main.
+
+config KERNEL_PATCHES
+	string "Patch directory"
+	help
+	  *.patch files (git format-patch) applied in name order on top of
+	  the ref with git am; relative to this repo, e.g. kernel/patches.
+
+config KERNEL_TREE
+	string "Local tree (instead of git)"
+	help
+	  A frank-w kernel checkout built as it is, uncommitted changes
+	  included (out of tree, so it must not have an in-tree build);
+	  the repository, ref and patches above are then unused.
+
+config KERNEL_DEFCONFIG
+	string "Base kernel config"
+	help
+	  Empty: the tree's mt7988a_bpi-r4_defconfig. Otherwise a defconfig
+	  file relative to this repo, e.g. from make kernel-savedefconfig
+	  OUT=kernel/my_defconfig.
+
+config KERNEL_FRAGMENTS
+	string "Config fragments"
+	default "kernel/features.config kernel/r4-only.config"
+	help
+	  Space-separated files of CONFIG_ lines (as make kernel-menuconfig
+	  FRAGMENT=kernel/x.config writes) merged on top of the base config,
+	  relative to this repo. A value the kernel's Kconfig drops (an
+	  unmet dependency, a misspelt symbol) stops the build.
+	  kernel/features.config adds WireGuard, exFAT, BBR, USB modem,
+	  serial and storage drivers, PPS clients, zram, KVM and the EIP-197
+	  crypto driver; kernel/r4-only.config leaves out drivers for hardware the
+	  R4 family doesn't have (other MediaTek SoCs' clocks and pin
+	  controllers, EFI, VT, PS/2, libata).
+
+config KERNEL_LOCALVERSION
+	string "Version suffix"
+	default "-custom"
+	help
+	  Appended to the kernel version, in the image name and uname -r
+	  (CI builds have -main): 7.2.0-custom, 7.2.0-bpi-r4-custom.
+
+comment "Kernel extras"
+
+config KERNEL_APPARMOR
+	bool "AppArmor"
+	help
+	  kernel/apparmor.config: the AppArmor LSM, on at boot; images get
+	  the apparmor package with the distribution's profiles. Docker,
+	  Podman, LXC and Incus confine their containers with it. Services
+	  that ship profiles run confined too, chrony and gpsd among them:
+	  check them on the board.
+
+config KERNEL_TRACING
+	bool "BPF tracing"
+	help
+	  kernel/tracing.config: kprobes, uprobes, BTF and the kernel
+	  headers, for bpftrace and the bcc tools (both installed). BTF
+	  needs the kernel built with debug info and pahole (dwarves) on the
+	  build host: kernel builds are slower and the kernel a few MB
+	  bigger. Modules are installed stripped.
+
+# the fragments the extras add to KERNEL_FRAGMENTS
+config KERNEL_EXTRA_FRAGMENTS
+	string
+	default "kernel/apparmor.config kernel/tracing.config" if KERNEL_APPARMOR && KERNEL_TRACING
+	default "kernel/apparmor.config" if KERNEL_APPARMOR
+	default "kernel/tracing.config" if KERNEL_TRACING
+
+endmenu
+
+choice
+	prompt "Distribution"
+	default DISTRO_TRIXIE
+	help
+	  Root filesystem release, bootstrapped with debootstrap and cached
+	  as .cache/rootfs/<release>_arm64.tar.gz (build.sh --clean rebuilds
+	  it); each image then installs the release's updates.
+
+config DISTRO_TRIXIE
+	bool "Debian 13 (trixie)"
+
+config DISTRO_BOOKWORM
+	bool "Debian 12 (bookworm)"
+
+config DISTRO_NOBLE
+	bool "Ubuntu 24.04 (noble)"
+
+config DISTRO_RESOLUTE
+	bool "Ubuntu 26.04 (resolute)"
+	help
+	  Needs a debootstrap with a resolute script on the build host
+	  (Debian's 1.0.142 or Ubuntu's 1.0.142ubuntu2 and newer).
+
+endchoice
+
+config DISTRO
+	string
+	default "bookworm" if DISTRO_BOOKWORM
+	default "noble" if DISTRO_NOBLE
+	default "resolute" if DISTRO_RESOLUTE
+	default "trixie"
+
+config DEBIAN_MIRROR
+	string "Debian mirror"
+	default "http://deb.debian.org/debian"
+	help
+	  The archive for the bootstrap and the image's sources.list
+	  (security updates come from security.debian.org regardless). A
+	  caching proxy speeds up rebuilds, e.g. apt-cacher-ng's
+	  http://<host>:3142/deb.debian.org/debian.
+
+config UBUNTU_MIRROR
+	string "Ubuntu mirror"
+	default "http://ports.ubuntu.com/ubuntu-ports"
+	help
+	  The archive for the bootstrap and the image's sources.list,
+	  including security updates: a ports mirror, as arm64 isn't on the
+	  main Ubuntu archive.
+
+# the one the distribution uses; derived rather than a default of a
+# visible option, which a saved .config would pin
+config MIRROR
+	string
+	default UBUNTU_MIRROR if DISTRO_NOBLE || DISTRO_RESOLUTE
+	default DEBIAN_MIRROR
+
+menu "Releases"
+
+config UBOOT_RELEASE
+	string "u-boot release"
+	help
+	  A frank-w/u-boot release tag for the base image, bl2 and fip.
+	  Empty takes the board's default: the latest release, except on
+	  the 4E, which needs 2026.07 or newer and gets the 2026.07 CI build
+	  (build.sh).
+
+config KERNEL_RELEASE
+	string "Kernel release"
+	depends on KERNEL_CI
+	help
+	  A frank-w/BPI-Router-Linux release tag of the chosen kernel
+	  branch (CI-BUILD-<branch>-main-<version>-<date>); empty takes the
+	  branch's latest CI build.
+
+config DT_OVERLAYS
+	string "Extra device tree overlays"
+	help
+	  Space-separated FIT overlay names for u-boot's addconf, after the
+	  board's (the 8X/4E port overlays and the M.2 slots' ov-pro-cn14
+	  and ov-pro-cn15). Ones the kernel's FIT doesn't have are dropped.
+
+endmenu
+
+menu "Network"
+
+choice
+	prompt "R4 Pro combo/WAN ports"
+	depends on BOARD_R4PRO_8X || BOARD_R4PRO_4E
+	default PORTS_PHY if BOARD_R4PRO_4E
+	default PORTS_SFP
+	help
+	  8X: the 10G LAN (lan6) and WAN combo ports. 4E: the WAN, on SFP2
+	  or the 2.5G RJ45. Selected by device tree overlay on 7.2; 6.18 has
+	  no 4E overlays and switches the 8X ports on SFP module presence.
+
+config PORTS_SFP
+	bool "SFP"
+
+config PORTS_PHY
+	bool "RJ45 (PHY)"
+
+endchoice
+
+config PORTS
+	string
+	default "phy" if PORTS_PHY
+	default "sfp"
+
+choice
+	prompt "Role"
+	default ROLE_ROUTER
+
+config ROLE_ROUTER
+	bool "Router"
+	help
+	  The WAN takes a DHCP lease; the LAN ports are bridged as lanbr0
+	  with a static address and optionally a DHCP server, and IPv4 is
+	  forwarded between them (NAT and firewall with FIREWALL).
+
+config ROLE_SWITCH
+	bool "Switch"
+	help
+	  Every port, WAN included, in one bridge (lanbr0) that takes a DHCP
+	  lease: the board passes traffic like a switch and is reachable at
+	  that address. No DHCP server, forwarding, NAT or nftables.
+
+endchoice
+
+config ROLE
+	string
+	default "switch" if ROLE_SWITCH
+	default "router"
+
+config LAN_ADDRESS
+	string "LAN address"
+	depends on ROLE_ROUTER
+	default "192.168.1.1/24"
+	help
+	  lanbr0's address and prefix (/8 to /30, at most /24 with the DHCP
+	  server).
+
+config DHCP_SERVER
+	bool "DHCP server on the LAN"
+	depends on ROLE_ROUTER
+	default y
+	help
+	  networkd's DHCP server on lanbr0, leasing host numbers 101-250 of
+	  the LAN subnet and passing on the WAN's DNS servers.
+
+config FIREWALL
+	bool "NAT and firewall (nftables)"
+	depends on ROLE_ROUTER
+	default y
+	help
+	  Masquerades the LAN to the WAN and drops what isn't LAN traffic,
+	  replies, ping, DHCP or (with SSH_FROM_WAN) SSH. Without it the
+	  board still forwards, unNATed and unfiltered.
+
+config SSH_FROM_WAN
+	bool "Allow SSH from the WAN side"
+	depends on FIREWALL
+	default y
+	help
+	  Root SSH takes keys only.
+
+choice
+	prompt "Cellular modem"
+	default MODEM_NONE
+	help
+	  A 4G/5G modem, e.g. in the R4 Pro's M.2 key-B slot. The kernel
+	  drivers (qmi_wwan, cdc_mbim, option, MHI, T7xx) are there either
+	  way; this is the userspace. The modem's interface counts as WAN
+	  to the firewall (masqueraded, input dropped). A modem switched to
+	  ECM mode is a USB uplink instead (USB_WAN).
+
+config MODEM_NONE
+	bool "None"
+
+config MODEM_MM
+	bool "ModemManager"
+	help
+	  ModemManager with qmicli and mbimcli, for QMI and MBIM modems
+	  (a Quectel RM520N in its default QMI mode). modem-connect.service
+	  enables the modem and keeps a data connection up with the APN;
+	  ModemManager's connection dispatcher puts the addresses, a default
+	  route with the metric and the DNS servers on the wwan interface,
+	  which networkd leaves alone. Without a SIM it waits.
+
+endchoice
+
+config MODEM
+	string
+	default "mm" if MODEM_MM
+	default "none"
+
+config MODEM_APN
+	string "APN"
+	depends on MODEM_MM
+	help
+	  Empty: the network's default (most LTE/5G networks). A PIN-locked
+	  SIM has to be unlocked by hand (mmcli -i <sim> --pin=<PIN>).
+
+config USB_WAN
+	bool "Phones and ECM modems on USB as backup uplinks"
+	default y
+	help
+	  networkd takes a DHCP lease, with the backup route metric, on USB
+	  network interfaces from phones and modems: Android tethering
+	  (RNDIS, NCM, ECM), iPhone tethering (ipheth; usbmuxd does the
+	  "Trust this computer" pairing) and modems switched to ECM mode
+	  (Quectel: AT+QCFG="usbnet",1, APN set in the modem). Any
+	  cdc_ether or cdc_ncm device counts, USB Ethernet adapters in
+	  those modes too. They count as WAN to the firewall.
+
+config BACKUP_METRIC
+	int "Backup route metric"
+	depends on MODEM_MM || USB_WAN
+	range 1 65535
+	default 2048
+	help
+	  The default route metric of the cellular modem and USB uplinks.
+	  Above the WAN's (networkd's DHCP default, 1024) they're backups,
+	  used when the WAN's route goes (link or lease lost); below, the
+	  preferred route. A WAN that stays up while the ISP fails upstream
+	  keeps its route: that needs a health check.
+
+endmenu
+
+menu "Wi-Fi"
+
+choice
+	prompt "Wi-Fi mode"
+	default WIFI_MONITOR
+
+config WIFI_MONITOR
+	bool "Monitor-only MT7915/MT7916"
+	help
+	  mt7915e cards (MT7915/MT7916) in monitor mode only: no hostapd,
+	  no networkd config on wlan*, no BE14 (mt7996) firmware and its
+	  driver blacklisted. The build checks the mt7915/mt7916 firmware
+	  is in the image.
+
+config WIFI_AP
+	bool "Access point"
+	help
+	  hostapd access points on the Wi-Fi cards (MT7915/MT7916, BE14),
+	  one per band. At boot, wifi-ap (overlays/wifi-ap) gives each band
+	  a radio that can run it and makes hostapd's config from the
+	  card's capabilities. The settings go in the board's
+	  /etc/default/wifi-ap, where they can be changed. Needs REGDOM.
+	  Wi-Fi 6 at most: the distributions' hostapd 2.10 has no Wi-Fi 7.
+
+config WIFI_OFF
+	bool "Off"
+	help
+	  No hostapd and no wlan networkd config; mt7915e and mt7996e are
+	  blacklisted.
+
+endchoice
+
+config WIFI
+	string
+	default "ap" if WIFI_AP
+	default "off" if WIFI_OFF
+	default "monitor"
+
+menu "Access point"
+	depends on WIFI_AP
+
+config WIFI_SSID
+	string "Network name (SSID)"
+	help
+	  Up to 32 bytes, the same on every band. Empty uses the hostname.
+
+config WIFI_PASSPHRASE
+	string "Passphrase"
+	help
+	  8 to 63 characters. Kept in plain text in .config,
+	  out/<image>.config and the board's /etc/default/wifi-ap (readable
+	  by root only). The WIFI_PASSPHRASE environment variable overrides
+	  it and keeps it out of the config files.
+
+config WIFI_WPA3_ONLY
+	bool "WPA3 only"
+	help
+	  WPA3 (SAE) only on 2.4 and 5 GHz too, which clients from before
+	  about 2019 can't join. Without it, those bands take WPA2 and WPA3
+	  (transition mode). 6 GHz is always WPA3 only.
+
+comment "Bands: each needs a radio that can run it"
+
+config WIFI_5G
+	bool "5 GHz"
+	default y
+	help
+	  80 MHz wide. Bands get radios in the order 5, 6, 2.4 GHz: a card
+	  that runs one band at a time, like the MT7915E, serves the first
+	  of them it can, so a single MT7915E gives 5 GHz only; two give 5
+	  and 2.4 GHz. Bands no radio is left for are skipped.
+
+config WIFI_CHANNEL_5G
+	int "5 GHz channel (0: automatic)"
+	depends on WIFI_5G
+	default 36
+	help
+	  36-64, 100-144 or 149-177, in steps of 4; the 80 MHz block is the
+	  one the channel is in. 52-144 need radar detection: the access
+	  point listens for a minute (ten on 120-128) before it starts.
+	  Automatic leaves those out.
+
+config WIFI_6G
+	bool "6 GHz"
+	default y
+	help
+	  80 MHz wide, WPA3 only. Needs a card with 6 GHz, such as the BE14.
+
+config WIFI_CHANNEL_6G
+	int "6 GHz channel (0: automatic)"
+	depends on WIFI_6G
+	default 37
+	help
+	  1-233 in steps of 4. Clients find access points fastest on the
+	  preferred scanning channels (5, 21, 37 and every 16th after),
+	  which automatic sticks to.
+
+config WIFI_2G4
+	bool "2.4 GHz"
+	default y
+	help
+	  20 MHz wide.
+
+config WIFI_CHANNEL_2G4
+	int "2.4 GHz channel (0: automatic)"
+	depends on WIFI_2G4
+	range 0 13
+	default 1
+
+choice
+	prompt "Wi-Fi clients' network"
+	default WIFI_NET_LAN
+
+config WIFI_NET_LAN
+	bool "The LAN"
+	help
+	  The access points are bridged into lanbr0: Wi-Fi clients are on
+	  the LAN like wired ones, with the router's DHCP leases, or with
+	  the switch role, the upstream network's.
+
+config WIFI_NET_SUBNET
+	bool "A subnet of their own"
+	depends on ROLE_ROUTER
+	help
+	  The access points are bridged as wlanbr0, with WIFI_ADDRESS and a
+	  DHCP server, and routed (NATed, with the firewall) to the WAN.
+
+endchoice
+
+config WIFI_ADDRESS
+	string "Wi-Fi subnet address"
+	depends on WIFI_NET_SUBNET
+	default "192.168.20.1/24"
+	help
+	  wlanbr0's address and prefix (/8 to /24), outside the LAN. Its
+	  DHCP server leases host numbers 101-250 and passes on the WAN's
+	  DNS servers.
+
+config WIFI_GUEST
+	bool "Guest network: no LAN access"
+	depends on WIFI_NET_SUBNET && FIREWALL
+	help
+	  Wi-Fi clients reach the WAN only: not the LAN, and not the router
+	  except for DHCP and ping (overlays/wifi-guest).
+
+endmenu
+
+config REGDOM
+	string "Regulatory domain"
+	help
+	  cfg80211's ieee80211_regdom (two letters, 00 for world), also
+	  hostapd's country_code with the AP, which needs one. Empty leaves
+	  the kernel's world domain.
+
+endmenu
+
+menu "Identity"
+
+config HOSTNAME
+	string "Hostname"
+	default "endpoint"
+
+config ROOT_PASSWORD
+	string "Root password (console only)"
+	help
+	  SSH takes keys only. Empty keeps scripts/mkimage's default; the
+	  ROOT_PASSWORD environment variable overrides both. Kept in plain
+	  text in .config and out/<image>.config.
+
+config LOCALES
+	string "Locales"
+	default "en_US.UTF-8"
+	help
+	  Space-separated locales generated with locale-gen; the first is
+	  the system's LANG. SSH clients pass theirs (LANG, LC_*), which
+	  must exist to avoid "cannot change locale" warnings. Empty: only
+	  C.UTF-8, built into libc.
+
+config AUTHORIZED_KEYS
+	string "Root SSH authorized_keys file"
+	default "root_authorized_keys"
+	help
+	  Relative to the repo, or absolute. It needs at least one key:
+	  password login over SSH is disabled.
+
+endmenu
+
+menu "Time"
+
+config GPS_TIME
+	bool "GPS time (gpsd + chrony refclock)"
+	default y
+	help
+	  Installs gpsd, polling the receiver without clients, and gives
+	  chrony its time as a refclock (NTP shared memory segment 0).
+	  Without it chrony uses the distribution's NTP pool only.
+
+config GPS_DEVICE
+	string "GPS receiver"
+	depends on GPS_TIME
+	default "/dev/ttyACM0"
+
+config GPS_OFFSET
+	string "GPS serial time offset (seconds)"
+	depends on GPS_TIME
+	default "0.067"
+	help
+	  How late the receiver's serial time arrives; 0.067 for a u-blox 7
+	  on USB at 9600 baud.
+
+endmenu
+
+menu "Packages"
+
+comment "Each option installs the package it names, with its recommends"
+
+menu "Network diagnostics"
+
+config PKG_ETHTOOL
+	bool "ethtool: NIC and PHY settings, link state, statistics"
+	default y
+
+config PKG_MTR_TINY
+	bool "mtr-tiny: traceroute and ping combined, interactive"
+
+config PKG_TRACEROUTE
+	bool "traceroute: classic traceroute (UDP, ICMP, TCP)"
+
+config PKG_TCPTRACEROUTE
+	bool "tcptraceroute: traceroute with TCP SYNs, through firewalls"
+
+config PKG_IPUTILS_TRACEPATH
+	bool "iputils-tracepath: tracepath: path MTU discovery"
+
+config PKG_BIND9_DNSUTILS
+	bool "bind9-dnsutils: dig, nslookup, nsupdate"
+
+config PKG_LDNSUTILS
+	bool "ldnsutils: drill and other DNS(SEC) tools"
+
+config PKG_KNOT_DNSUTILS
+	bool "knot-dnsutils: kdig: DNS over TLS/HTTPS queries"
+
+config PKG_DNSTOP
+	bool "dnstop: DNS traffic by query and client"
+
+config PKG_IPUTILS_ARPING
+	bool "iputils-arping: ARP ping, duplicate address detection"
+
+config PKG_FPING
+	bool "fping: ping many hosts at once"
+
+config PKG_NDISC6
+	bool "ndisc6: IPv6 neighbour and router discovery tools"
+
+config PKG_WHOIS
+	bool "whois: whois client and mkpasswd"
+
+config PKG_IPCALC
+	bool "ipcalc: IPv4 subnet calculator"
+
+config PKG_SIPCALC
+	bool "sipcalc: IPv4 and IPv6 subnet calculator"
+
+config PKG_CONNTRACK
+	bool "conntrack: inspect and flush netfilter connection tracking"
+
+config PKG_NET_TOOLS
+	bool "net-tools: ifconfig, netstat, route (legacy)"
+
+config PKG_BRIDGE_UTILS
+	bool "bridge-utils: brctl (legacy bridge tool)"
+
+config PKG_SNMP
+	bool "snmp: snmpwalk, snmpget: query SNMP agents"
+
+config PKG_INETUTILS_TELNET
+	bool "inetutils-telnet: telnet client, for switch and device consoles"
+
+config PKG_WAKEONLAN
+	bool "wakeonlan: send Wake-on-LAN packets"
+
+config PKG_ETHERWAKE
+	bool "etherwake: send Wake-on-LAN packets from a chosen interface"
+
+config PKG_HTTPIE
+	bool "httpie: HTTP client for APIs (http, https)"
+
+config PKG_SPEEDTEST_CLI
+	bool "speedtest-cli: internet bandwidth test against speedtest.net"
+
+endmenu
+
+menu "Packet capture and scanning"
+
+config PKG_TCPDUMP
+	bool "tcpdump: packet capture"
+	default y
+
+config PKG_TSHARK
+	bool "tshark: Wireshark's command-line packet analyser"
+
+config PKG_TERMSHARK
+	bool "termshark: Wireshark-like terminal UI for tshark"
+
+config PKG_NGREP
+	bool "ngrep: grep for packet payloads"
+
+config PKG_TCPFLOW
+	bool "tcpflow: reassemble and save TCP streams"
+
+config PKG_TCPREPLAY
+	bool "tcpreplay: replay captured traffic"
+
+config PKG_NETSNIFF_NG
+	bool "netsniff-ng: fast zero-copy capture and traffic generation toolkit"
+
+config PKG_PYTHON3_SCAPY
+	bool "python3-scapy: Scapy: build, send and dissect packets in Python"
+
+config PKG_NMAP
+	bool "nmap: port scanner and host discovery"
+
+config PKG_MASSCAN
+	bool "masscan: very fast port scanner"
+
+config PKG_HPING3
+	bool "hping3: craft TCP/UDP/ICMP packets, firewall testing"
+
+config PKG_ARP_SCAN
+	bool "arp-scan: find hosts on the LAN by ARP"
+
+config PKG_NETDISCOVER
+	bool "netdiscover: passive and active ARP host discovery"
+
+config PKG_NETCAT_OPENBSD
+	bool "netcat-openbsd: nc, the TCP/UDP swiss army knife"
+
+config PKG_SOCAT
+	bool "socat: relay between sockets, ttys and files"
+
+endmenu
+
+menu "Monitoring"
+
+config PKG_HTOP
+	bool "htop: interactive process viewer"
+
+config PKG_BTOP
+	bool "btop: resource monitor: CPU, memory, disks, network"
+
+config PKG_GLANCES
+	bool "glances: system overview, with a web and API mode"
+
+config PKG_ATOP
+	bool "atop: system and process activity, logged over time"
+
+config PKG_NMON
+	bool "nmon: performance monitor"
+
+config PKG_IOTOP_C
+	bool "iotop-c: per-process disk I/O"
+
+config PKG_SYSSTAT
+	bool "sysstat: sar, iostat, mpstat history"
+
+config PKG_LSOF
+	bool "lsof: open files and sockets per process"
+
+config PKG_STRACE
+	bool "strace: trace system calls"
+
+config PKG_POWERTOP
+	bool "powertop: power consumption and wakeups"
+
+config PKG_IFTOP
+	bool "iftop: bandwidth per connection"
+
+config PKG_NLOAD
+	bool "nload: bandwidth per interface, graphed"
+
+config PKG_BMON
+	bool "bmon: bandwidth and rates per interface"
+
+config PKG_NETHOGS
+	bool "nethogs: bandwidth per process"
+
+config PKG_IPTRAF_NG
+	bool "iptraf-ng: interactive IP traffic monitor"
+
+config PKG_BWM_NG
+	bool "bwm-ng: bandwidth monitor for interfaces and disks"
+
+config PKG_IFSTAT
+	bool "ifstat: interface statistics, vmstat-style"
+
+config PKG_TCPTRACK
+	bool "tcptrack: TCP connections and their bandwidth"
+
+config PKG_VNSTAT
+	bool "vnstat: traffic accounting per interface, kept across reboots"
+
+config PKG_DARKSTAT
+	bool "darkstat: traffic statistics per host, with a web view"
+
+config PKG_LNAV
+	bool "lnav: log file navigator"
+
+endmenu
+
+menu "Metrics and logging"
+
+config PKG_PROMETHEUS_NODE_EXPORTER
+	bool "prometheus-node-exporter: Prometheus metrics of the system"
+
+config PKG_PROMETHEUS_BLACKBOX_EXPORTER
+	bool "prometheus-blackbox-exporter: Prometheus probes: ping, HTTP, DNS, TCP"
+
+config PKG_COLLECTD
+	bool "collectd: system statistics daemon"
+
+config PKG_MUNIN_NODE
+	bool "munin-node: Munin agent"
+
+config PKG_MONIT
+	bool "monit: watch services and resources, restart and alert"
+
+config PKG_ZABBIX_AGENT
+	bool "zabbix-agent: Zabbix agent"
+	depends on !DISTRO_NOBLE
+	help
+	  Not in Ubuntu 24.04.
+
+config PKG_SNMPD
+	bool "snmpd: SNMP agent"
+
+config PKG_RSYSLOG
+	bool "rsyslog: syslog daemon, for sending logs to a remote server"
+
+config PKG_SYSTEMD_JOURNAL_REMOTE
+	bool "systemd-journal-remote: send or receive the journal over the network"
+
+endmenu
+
+menu "Benchmarks and testing"
+
+config PKG_IPERF3
+	bool "iperf3: throughput testing"
+	default y
+
+config PKG_IPERF
+	bool "iperf: iperf 2: throughput testing, multicast"
+
+config PKG_STRESS_NG
+	bool "stress-ng: stress CPU, memory, I/O; burn-in"
+
+config PKG_MEMTESTER
+	bool "memtester: userspace memory test"
+
+config PKG_FIO
+	bool "fio: storage I/O benchmark"
+
+config PKG_SYSBENCH
+	bool "sysbench: CPU, memory and file I/O benchmarks"
+
+endmenu
+
+menu "Hardware"
+
+config PKG_USBUTILS
+	bool "usbutils: lsusb"
+	default y
+
+config PKG_PCIUTILS
+	bool "pciutils: lspci"
+	default y
+
+config PKG_LSHW
+	bool "lshw: hardware inventory"
+
+config PKG_INXI
+	bool "inxi: system information summary"
+
+config PKG_I2C_TOOLS
+	bool "i2c-tools: i2cdetect, i2cget, i2cset (SFP EEPROMs, sensors)"
+
+config PKG_SPI_TOOLS
+	bool "spi-tools: spi-config and spi-pipe for spidev"
+
+config PKG_GPIOD
+	bool "gpiod: gpiodetect, gpioget, gpioset"
+
+config PKG_LM_SENSORS
+	bool "lm-sensors: sensors: temperatures, fan speeds"
+
+config PKG_MMC_UTILS
+	bool "mmc-utils: eMMC boot partitions and registers (mmc)"
+
+config PKG_MTD_UTILS
+	bool "mtd-utils: flash_erase, nandwrite, ubiformat for the SPI-NAND"
+
+config PKG_U_BOOT_TOOLS
+	bool "u-boot-tools: mkimage and dumpimage for FIT images"
+
+config PKG_LIBUBOOTENV_TOOL
+	bool "libubootenv-tool: fw_printenv and fw_setenv, u-boot's environment from Linux"
+
+config PKG_PICOCOM
+	bool "picocom: minimal serial terminal, for other gear's consoles"
+
+config PKG_MINICOM
+	bool "minicom: menu-driven serial terminal"
+
+config PKG_SER2NET
+	bool "ser2net: serial ports over the network"
+
+config PKG_USB_MODESWITCH
+	bool "usb-modeswitch: switch USB modems and dongles out of storage mode"
+
+config PKG_RFKILL
+	bool "rfkill: list and toggle radio kill switches"
+
+config PKG_NUT
+	bool "nut: Network UPS Tools: UPS monitoring and shutdown"
+
+config PKG_APCUPSD
+	bool "apcupsd: APC UPS monitoring and shutdown"
+	depends on !PKG_NUT
+	help
+	  Conflicts with nut: both are UPS monitors (ups-monitor).
+
+config PKG_RTL_SDR
+	bool "rtl-sdr: RTL2832U USB software-defined radio tools"
+
+endmenu
+
+menu "Storage and filesystems"
+
+config PKG_NVME_CLI
+	bool "nvme-cli: NVMe drive management and health"
+
+config PKG_SMARTMONTOOLS
+	bool "smartmontools: smartctl: SATA/NVMe drive health"
+
+config PKG_HDPARM
+	bool "hdparm: disk parameters and read benchmarks"
+
+config PKG_PARTED
+	bool "parted: partition editor"
+
+config PKG_GDISK
+	bool "gdisk: GPT partition editors (gdisk, sgdisk)"
+
+config PKG_DOSFSTOOLS
+	bool "dosfstools: FAT filesystems: mkfs.vfat, fsck.vfat"
+
+config PKG_MTOOLS
+	bool "mtools: FAT images without mounting (mcopy, mdir)"
+
+config PKG_F2FS_TOOLS
+	bool "f2fs-tools: F2FS, the flash filesystem"
+
+config PKG_SQUASHFS_TOOLS
+	bool "squashfs-tools: mksquashfs, unsquashfs"
+
+config PKG_BTRFS_PROGS
+	bool "btrfs-progs: Btrfs filesystems (kernel/features.config has Btrfs)"
+
+config PKG_CRYPTSETUP
+	bool "cryptsetup: LUKS disk encryption (dm-crypt in kernel/features.config)"
+
+config PKG_LVM2
+	bool "lvm2: logical volumes (device mapper in kernel/features.config)"
+
+config PKG_MDADM
+	bool "mdadm: software RAID (md in kernel/features.config)"
+
+config PKG_NTFS_3G
+	bool "ntfs-3g: read/write NTFS through FUSE"
+
+config PKG_SSHFS
+	bool "sshfs: mount remote directories over SSH (FUSE)"
+
+config PKG_AUTOFS
+	bool "autofs: mount network and removable filesystems on demand"
+
+config PKG_TESTDISK
+	bool "testdisk: recover partitions (testdisk) and files (photorec)"
+
+config PKG_GDDRESCUE
+	bool "gddrescue: ddrescue: copy failing disks"
+
+config PKG_PV
+	bool "pv: progress of data through a pipe"
+
+config PKG_BMAP_TOOLS
+	bool "bmap-tools: bmaptool: write sparse images to SD/eMMC fast"
+
+config PKG_DUF
+	bool "duf: disk usage and free space, readable"
+
+config PKG_SYSTEMD_ZRAM_GENERATOR
+	bool "systemd-zram-generator: compressed swap in RAM: zram, half the RAM up to 4 GB"
+
+endmenu
+
+menu "Wi-Fi"
+
+config PKG_WPASUPPLICANT
+	bool "wpasupplicant: Wi-Fi client (station) mode"
+
+config PKG_WAVEMON
+	bool "wavemon: Wi-Fi link and signal monitor"
+
+config PKG_AIRCRACK_NG
+	bool "aircrack-ng: monitor-mode capture and injection tools (airodump-ng)"
+	depends on !DISTRO_NOBLE
+	help
+	  Not in Ubuntu 24.04.
+
+config PKG_HCXDUMPTOOL
+	bool "hcxdumptool: capture Wi-Fi frames (PMKID, handshakes) in monitor mode"
+
+config PKG_HCXTOOLS
+	bool "hcxtools: convert and analyse hcxdumptool captures"
+
+config PKG_HORST
+	bool "horst: lightweight Wi-Fi scanner and analyser"
+
+config PKG_MDK4
+	bool "mdk4: Wi-Fi testing tool (deauth, beacon flood)"
+	depends on !DISTRO_NOBLE
+	help
+	  Not in Ubuntu 24.04.
+
+endmenu
+
+menu "DNS and DHCP"
+
+config PKG_DNSMASQ
+	bool "dnsmasq: DNS forwarder and DHCP server"
+
+config PKG_UNBOUND
+	bool "unbound: validating, caching DNS resolver"
+
+config PKG_BIND9
+	bool "bind9: BIND authoritative and recursive DNS server"
+
+config PKG_NSD
+	bool "nsd: authoritative-only DNS server"
+
+config PKG_PDNS_RECURSOR
+	bool "pdns-recursor: PowerDNS recursive resolver"
+
+config PKG_STUBBY
+	bool "stubby: DNS-over-TLS stub resolver"
+
+config PKG_DNSCRYPT_PROXY
+	bool "dnscrypt-proxy: DNSCrypt and DNS-over-HTTPS proxy"
+	depends on !DISTRO_BOOKWORM
+	help
+	  Not in Debian 12.
+
+config PKG_KEA_DHCP4_SERVER
+	bool "kea-dhcp4-server: ISC's DHCPv4 server"
+
+config PKG_RADVD
+	bool "radvd: IPv6 router advertisements"
+
+config PKG_NDPPD
+	bool "ndppd: IPv6 NDP proxy"
+
+config PKG_DDCLIENT
+	bool "ddclient: dynamic DNS updates"
+
+config PKG_AVAHI_DAEMON
+	bool "avahi-daemon: mDNS/DNS-SD: reach the board as <hostname>.local"
+
+config PKG_AVAHI_UTILS
+	bool "avahi-utils: avahi-browse, avahi-resolve"
+
+config PKG_TFTPD_HPA
+	bool "tftpd-hpa: TFTP server, e.g. for netbooting other boards"
+
+endmenu
+
+menu "Routing and firewall"
+
+config PKG_FRR
+	bool "frr: routing daemons: BGP, OSPF, IS-IS, RIP"
+
+config PKG_BIRD2
+	bool "bird2: BIRD routing daemon"
+
+config PKG_KEEPALIVED
+	bool "keepalived: VRRP failover and health checks"
+
+config PKG_CONNTRACKD
+	bool "conntrackd: connection tracking sync for firewall failover"
+
+config PKG_IPVSADM
+	bool "ipvsadm: IPVS kernel load balancer"
+
+config PKG_LLDPD
+	bool "lldpd: LLDP/CDP neighbour discovery"
+
+config PKG_MINIUPNPD
+	bool "miniupnpd: UPnP IGD and NAT-PMP port forwarding for the LAN"
+
+config PKG_IGMPPROXY
+	bool "igmpproxy: IGMP proxy, multicast IPTV through the router"
+
+config PKG_SMCROUTE
+	bool "smcroute: static multicast routes"
+
+config PKG_PPP
+	bool "ppp: PPP and PPPoE, for DSL and fibre ISPs"
+
+config PKG_IPTABLES
+	bool "iptables: iptables commands on nftables, for tools that need them"
+
+config PKG_IPSET
+	bool "ipset: IP sets, for tools that use them"
+
+config PKG_SOFTFLOWD
+	bool "softflowd: NetFlow/IPFIX exporter"
+
+config PKG_FREERADIUS
+	bool "freeradius: RADIUS server, e.g. for WPA-Enterprise"
+	help
+	  Its install generates test certificates, the same in every
+	  image: regenerate them on each board for real use.
+
+endmenu
+
+menu "VPN and remote access"
+
+config PKG_OPENVPN
+	bool "openvpn: OpenVPN client and server (WireGuard is always installed)"
+
+config PKG_STRONGSWAN
+	bool "strongswan: IPsec VPN"
+
+config PKG_TINC
+	bool "tinc: tinc mesh VPN"
+
+config PKG_OPENCONNECT
+	bool "openconnect: Cisco AnyConnect and compatible VPN client"
+
+config PKG_OCSERV
+	bool "ocserv: OpenConnect VPN server"
+
+config PKG_SSHUTTLE
+	bool "sshuttle: VPN over SSH"
+
+config PKG_AUTOSSH
+	bool "autossh: keep SSH tunnels up"
+
+config PKG_MOSH
+	bool "mosh: mobile shell, survives roaming and sleep"
+
+config PKG_COCKPIT
+	bool "cockpit: web-based server administration"
+
+endmenu
+
+menu "Web servers and proxies"
+
+config PKG_NGINX
+	bool "nginx: web server and reverse proxy"
+
+config PKG_CADDY
+	bool "caddy: web server with automatic HTTPS"
+
+config PKG_LIGHTTPD
+	bool "lighttpd: lightweight web server"
+
+config PKG_APACHE2
+	bool "apache2: Apache web server"
+
+config PKG_HAPROXY
+	bool "haproxy: TCP/HTTP load balancer and proxy"
+
+config PKG_SQUID
+	bool "squid: caching web proxy"
+
+config PKG_TINYPROXY
+	bool "tinyproxy: lightweight HTTP proxy"
+
+config PKG_PRIVOXY
+	bool "privoxy: filtering web proxy"
+
+config PKG_CERTBOT
+	bool "certbot: Let's Encrypt certificates"
+
+endmenu
+
+menu "File sharing and media"
+
+config PKG_SAMBA
+	bool "samba: SMB file server"
+
+config PKG_SMBCLIENT
+	bool "smbclient: SMB client (smbclient)"
+
+config PKG_NFS_KERNEL_SERVER
+	bool "nfs-kernel-server: NFS file server"
+
+config PKG_NFS_COMMON
+	bool "nfs-common: NFS client mounts"
+
+config PKG_CIFS_UTILS
+	bool "cifs-utils: SMB client mounts"
+
+config PKG_VSFTPD
+	bool "vsftpd: FTP server"
+
+config PKG_MINIDLNA
+	bool "minidlna: DLNA/UPnP media server"
+
+config PKG_TRANSMISSION_DAEMON
+	bool "transmission-daemon: BitTorrent client, web-controlled"
+
+config PKG_SYNCTHING
+	bool "syncthing: continuous file synchronisation"
+
+endmenu
+
+menu "Messaging and data"
+
+config PKG_MOSQUITTO
+	bool "mosquitto: MQTT broker"
+
+config PKG_MOSQUITTO_CLIENTS
+	bool "mosquitto-clients: mosquitto_pub, mosquitto_sub"
+
+config PKG_SQLITE3
+	bool "sqlite3: SQLite command-line shell"
+
+config PKG_REDIS_SERVER
+	bool "redis-server: in-memory key-value store"
+
+endmenu
+
+menu "Containers"
+
+config PKG_DOCKER_IO
+	bool "docker.io: Docker engine"
+
+config PKG_DOCKER_COMPOSE
+	bool "docker-compose: Docker Compose"
+	depends on !DISTRO_RESOLUTE
+	help
+	  Not in Ubuntu 26.04.
+
+config PKG_PODMAN
+	bool "podman: daemonless, rootless containers"
+
+config PKG_BUILDAH
+	bool "buildah: build OCI container images"
+
+config PKG_SKOPEO
+	bool "skopeo: copy and inspect container images"
+
+config PKG_LXC
+	bool "lxc: LXC system containers"
+
+config PKG_INCUS
+	bool "incus: Incus system containers and their manager"
+	depends on !DISTRO_BOOKWORM
+	help
+	  Not in Debian 12.
+
+config PKG_SYSTEMD_CONTAINER
+	bool "systemd-container: systemd-nspawn and machinectl"
+
+endmenu
+
+menu "Virtual machines"
+
+config PKG_QEMU_SYSTEM_ARM
+	bool "qemu-system-arm: QEMU for arm64 and arm guests, KVM-accelerated"
+
+config PKG_QEMU_UTILS
+	bool "qemu-utils: qemu-img: create and convert disk images"
+
+config PKG_QEMU_EFI_AARCH64
+	bool "qemu-efi-aarch64: UEFI firmware for arm64 guests"
+
+config PKG_LIBVIRT_DAEMON_SYSTEM
+	bool "libvirt-daemon-system: libvirt: manage VMs and their networks"
+
+config PKG_LIBVIRT_CLIENTS
+	bool "libvirt-clients: virsh"
+
+config PKG_VIRTINST
+	bool "virtinst: virt-install: create VMs from the command line"
+
+endmenu
+
+menu "Shell and editors"
+
+config PKG_SCREEN
+	bool "screen: terminal multiplexer"
+	default y
+
+config PKG_TMUX
+	bool "tmux: terminal multiplexer"
+
+config PKG_BYOBU
+	bool "byobu: screen/tmux with status bars and keybindings"
+
+config PKG_VIM
+	bool "vim: full Vim (vim-tiny is in the base system)"
+
+config PKG_NEOVIM
+	bool "neovim: Neovim editor"
+
+config PKG_MICRO
+	bool "micro: easy terminal editor"
+
+config PKG_MC
+	bool "mc: Midnight Commander file manager"
+
+config PKG_ZSH
+	bool "zsh: Z shell"
+
+config PKG_FISH
+	bool "fish: friendly interactive shell"
+
+config PKG_BASH_COMPLETION
+	bool "bash-completion: tab completion for commands' options"
+
+config PKG_MAN_DB
+	bool "man-db: manual pages"
+
+config PKG_SUDO
+	bool "sudo: for non-root users"
+
+endmenu
+
+menu "Command-line tools"
+
+config PKG_CURL
+	bool "curl: HTTP(S) client"
+
+config PKG_WGET
+	bool "wget: HTTP(S) downloader"
+
+config PKG_ARIA2
+	bool "aria2: multi-connection downloader"
+
+config PKG_LFTP
+	bool "lftp: FTP/SFTP/HTTP client with mirroring"
+
+config PKG_GIT
+	bool "git: version control"
+
+config PKG_RSYNC
+	bool "rsync: file synchronisation"
+
+config PKG_JQ
+	bool "jq: JSON processor"
+
+config PKG_YQ
+	bool "yq: YAML/XML processor on top of jq"
+
+config PKG_FZF
+	bool "fzf: fuzzy finder"
+
+config PKG_RIPGREP
+	bool "ripgrep: fast recursive grep (rg)"
+
+config PKG_FD_FIND
+	bool "fd-find: fast find (fdfind)"
+
+config PKG_BAT
+	bool "bat: cat with syntax highlighting (batcat)"
+
+config PKG_MOREUTILS
+	bool "moreutils: sponge, ts, chronic, vipe"
+
+config PKG_PARALLEL
+	bool "parallel: GNU parallel"
+
+config PKG_INOTIFY_TOOLS
+	bool "inotify-tools: inotifywait: act on file changes"
+
+config PKG_NCDU
+	bool "ncdu: disk usage, interactive"
+
+config PKG_TREE
+	bool "tree: directory trees"
+
+config PKG_FILE
+	bool "file: identify file types"
+
+config PKG_ZSTD
+	bool "zstd: Zstandard compression"
+
+config PKG_UNZIP
+	bool "unzip: zip archives"
+
+config PKG_PSMISC
+	bool "psmisc: killall, pstree, fuser"
+
+config PKG_AT
+	bool "at: run commands once, later"
+
+config PKG_BC
+	bool "bc: arbitrary-precision calculator"
+
+config PKG_PWGEN
+	bool "pwgen: password generator"
+
+config PKG_SHELLCHECK
+	bool "shellcheck: shell script linter"
+
+config PKG_PYTHON3_PIP
+	bool "python3-pip: Python package installer"
+
+config PKG_PYTHON3_VENV
+	bool "python3-venv: Python virtual environments"
+
+config PKG_NODEJS
+	bool "nodejs: Node.js JavaScript runtime"
+
+endmenu
+
+menu "Backup"
+
+config PKG_BORGBACKUP
+	bool "borgbackup: deduplicating, encrypted backups"
+
+config PKG_RESTIC
+	bool "restic: deduplicating, encrypted backups to many backends"
+
+config PKG_RCLONE
+	bool "rclone: sync to and from cloud storage"
+
+config PKG_RSNAPSHOT
+	bool "rsnapshot: rsync-based snapshot backups"
+
+endmenu
+
+menu "Maintenance and security"
+
+config PKG_UNATTENDED_UPGRADES
+	bool "unattended-upgrades: install security updates automatically"
+
+config PKG_NEEDRESTART
+	bool "needrestart: list services to restart after upgrades"
+
+config PKG_APT_LISTCHANGES
+	bool "apt-listchanges: show changelogs of upgrades"
+
+config PKG_APT_FILE
+	bool "apt-file: which package has a file"
+
+config PKG_DEBSUMS
+	bool "debsums: verify installed files against their packages"
+
+config PKG_FAIL2BAN
+	bool "fail2ban: ban addresses after repeated failed logins"
+
+config PKG_SSHGUARD
+	bool "sshguard: block SSH and other brute-force attacks"
+
+config PKG_CROWDSEC
+	bool "crowdsec: collaborative intrusion detection and blocking"
+	help
+	  Its install registers the machine with its local API, the
+	  same in every image: re-register on each board
+	  (cscli machines add --auto --force) to tell boards apart.
+
+config PKG_KNOCKD
+	bool "knockd: port knocking"
+
+config PKG_LYNIS
+	bool "lynis: security audit"
+
+config PKG_GNUPG
+	bool "gnupg: GnuPG encryption and signing"
+
+config PKG_AGE
+	bool "age: simple file encryption"
+
+config PKG_MSMTP_MTA
+	bool "msmtp-mta: minimal sendmail for alerts (smartd, mdadm, cron) via SMTP"
+
+endmenu
+
+menu "GPS and time"
+
+config PKG_GPSD_CLIENTS
+	bool "gpsd-clients: cgps, gpsmon: watch the receiver"
+
+config PKG_PPS_TOOLS
+	bool "pps-tools: ppstest, ppsctl for PPS sources (PPS clients are in the kernel)"
+
+config PKG_LINUXPTP
+	bool "linuxptp: Precision Time Protocol (ptp4l, phc2sys)"
+
+endmenu
+
+config PKG_DEVTOOLS
+	bool "Development tools (install-devtools, ~590MB)"
+	help
+	  Runs /usr/local/sbin/install-devtools in the image: build-essential,
+	  debhelper, devscripts, git-buildpackage and the common build
+	  systems. Without it the script is still there to run on the board.
+
+config EXTRA_PACKAGES
+	string "Extra packages"
+	help
+	  Space-separated, installed with their recommends, like the options
+	  above. Always installed: ssh, chrony, iw, xz-utils,
+	  wireguard-tools, exfatprogs, locales and systemd-resolved; gpsd
+	  with GPS time, nftables with the firewall (Debian's base system has
+	  it anyway), hostapd with the AP, usbmuxd with USB uplinks,
+	  ModemManager with the cellular modem.
+
+endmenu
+
+config IMAGE_TAG
+	string "Image name tag"
+	help
+	  Appended to the image name (bpi-r4pro_trixie_7.2.0-main_sdmmc-<tag>
+	  .img.gz), to keep differently configured builds apart in out/.

@@ -1,0 +1,3 @@
+# BPI-R4 Pro 4E on eMMC (kernel 7.2, 4GB, WAN on the 2.5G RJ45)
+CONFIG_BOARD_R4PRO_4E=y
+CONFIG_DEVICE_EMMC=y

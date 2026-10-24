@@ -1,0 +1,20 @@
+# The MT7988 2.5G PHY driver is built into the 7.2 kernel and requests
+# mediatek/mt7988/i2p5ge-phy-pmb.bin before the rootfs is mounted; the
+# probe fails with -ENOENT and is never retried, leaving the RJ45 WAN dead.
+# Probe it again once the firmware is readable, before networkd opens eth1.
+[Unit]
+Description=Probe the MT7988 2.5G PHY once its firmware is readable
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target systemd-networkd.service
+Wants=network-pre.target
+ConditionPathExists=/sys/bus/mdio_bus/devices/mdio-bus:0f
+ConditionPathExists=!/sys/bus/mdio_bus/devices/mdio-bus:0f/driver
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo mdio-bus:0f > /sys/bus/mdio_bus/drivers_probe'
+ExecStart=/usr/bin/test -e /sys/bus/mdio_bus/devices/mdio-bus:0f/driver
+
+[Install]
+WantedBy=network-pre.target

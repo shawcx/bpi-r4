@@ -1,0 +1,13 @@
+# Keep the cellular modem connected (build config MODEM=mm)
+[Unit]
+Description=Cellular modem connection
+Wants=ModemManager.service
+After=ModemManager.service
+
+[Service]
+ExecStart=/usr/local/sbin/modem-connect
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,38 @@
+#!/bin/bash
+# Bootstrap an arm64 Debian or Ubuntu base system (debootstrap's default
+# package set) and pack it as a tarball: the cached starting point of every
+# image of that release, rebuilt by build.sh --clean. Sources, packages and
+# settings are the image's business (scripts/mkimage). Builds in a tmpfs.
+# One stage, not --foreign: debootstrap's package lookups (perl over the
+# whole Packages file) then run on the host, and only dpkg and maintainer
+# scripts run in the chroot, which on x86_64 goes through the qemu binfmt;
+# a --foreign second stage runs it all under qemu, minutes per lookup.
+# usage: scripts/rootfs <distro> <mirror> <out.tar.gz>
+set -euo pipefail
+
+distro=$1
+mirror=$2
+out=$3
+
+dir=$(mktemp -d)
+# debootstrap's working directory, where it leaves wget-log files
+wdir=$(mktemp -d)
+cleanup() {
+	# debootstrap leaves /proc and /sys mounted in the chroot when it fails
+	sudo umount -R "$dir" 2>/dev/null || true
+	rmdir "$dir"
+	rm -rf "$wdir"
+}
+trap cleanup EXIT
+sudo mount -t tmpfs -o size=2G,mode=755 rootfs "$dir"
+
+echo "bootstrapping $distro arm64 from $mirror..."
+cd "$wdir"
+# a Release file it can't verify (no keyring) is an error, not a warning
+sudo debootstrap --arch=arm64 --force-check-gpg "$distro" "$dir" "$mirror"
+
+# xattrs keep file capabilities (ping's cap_net_raw)
+sudo tar -C "$dir" --xattrs --xattrs-include='*' -I pigz -cf "$out.part" .
+sudo chown "$(id -u):$(id -g)" "$out.part"
+mv "$out.part" "$out"
+echo "rootfs $out"

@@ -1,0 +1,14 @@
+# hostapd on one of wifi-ap's interfaces, with the config wifi-ap made for
+# it; stopped and started with wifi-ap.service
+[Unit]
+Description=Wi-Fi access point on %I
+BindsTo=sys-subsystem-net-devices-%i.device
+After=sys-subsystem-net-devices-%i.device wifi-ap.service
+PartOf=wifi-ap.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+ExecStart=/usr/sbin/hostapd /run/wifi-ap/%i.conf
+Restart=on-failure
+RestartSec=5

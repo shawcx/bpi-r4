@@ -1,0 +1,50 @@
+#!/bin/sh
+# ModemManager connection dispatcher (build config MODEM=mm). On connect, put
+# the bearer's addresses, default routes (metric METRIC from
+# /etc/default/modem, above the WAN's 1024 so the modem is the backup) and DNS
+# servers on the data interface; on disconnect, take them off. With a QMI or
+# MBIM modem the bearer's IP settings come from ModemManager, not DHCP.
+# args: modem path, bearer path, interface, connected|disconnected
+set -u
+bearer=$2
+iface=$3
+state=$4
+METRIC=2048
+[ -r /etc/default/modem ] && . /etc/default/modem
+
+# one value of the bearer, empty when unset ("--")
+kv() {
+	v=$(mmcli -b "$bearer" -K 2>/dev/null | sed -n "s/^$1 *: //p" | head -1)
+	[ "$v" = "--" ] || echo "$v"
+}
+
+case "$state" in
+connected)
+	ip link set "$iface" up
+	ip addr flush dev "$iface"
+	addr=$(kv 'bearer\.ipv4-config\.address')
+	if [ -n "$addr" ]; then
+		ip addr add "$addr/$(kv 'bearer\.ipv4-config\.prefix')" dev "$iface"
+		ip route replace default dev "$iface" metric "$METRIC"
+	fi
+	addr6=$(kv 'bearer\.ipv6-config\.address')
+	if [ -n "$addr6" ]; then
+		ip -6 addr add "$addr6/$(kv 'bearer\.ipv6-config\.prefix')" dev "$iface"
+		ip -6 route replace default dev "$iface" metric "$METRIC"
+	fi
+	mtu=$(kv 'bearer\.ipv4-config\.mtu')
+	[ -z "$mtu" ] || ip link set "$iface" mtu "$mtu"
+	dns=$(mmcli -b "$bearer" -K 2>/dev/null |
+		sed -n 's/^bearer\.ipv[46]-config\.dns\.value\[[0-9]*\] *: //p')
+	# shellcheck disable=SC2086
+	[ -z "$dns" ] || resolvectl dns "$iface" $dns
+	echo "$iface connected: ${addr:-no IPv4}${addr6:+, $addr6}, metric $METRIC"
+	;;
+disconnected)
+	resolvectl revert "$iface" 2>/dev/null
+	ip addr flush dev "$iface" 2>/dev/null
+	ip link set "$iface" down 2>/dev/null
+	echo "$iface disconnected"
+	;;
+esac
+exit 0

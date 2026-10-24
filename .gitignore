@@ -1,0 +1,7 @@
+out/
+.cache/
+.config
+.config.old
+/defconfig
+# your SSH public keys for the images' root login (README, Quick start)
+/root_authorized_keys

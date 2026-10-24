@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+# Download what an image is built from into the cache and print it as shell
+# assignments for build.sh:
+# - frank-w's u-boot release: the board's base image (partition table, bl2,
+#   fip, empty BPI-BOOT and BPI-ROOT filesystems) for the boot device, and
+#   for 8GB boards the same release's 8GB fip and, on sdmmc, bl2, plus the
+#   stock ones scripts/mkimage checks the base image against; on eMMC the
+#   bl2 for the boot0 partition
+# - frank-w's kernel CI build of the branch (BPI-Router-Linux releases)
+# - linux-firmware's aeonsemi, airoha, inside-secure (EIP-197) and mediatek
+#   directories (a sparse,
+#   shallow clone from GitLab, which unlike kernel.org serves partial clones)
+# - wireless-regdb's regulatory.db and its signature
+# Release downloads are cached by release; firmware and regdb are refreshed
+# on every run. GITHUB_TOKEN, if set, lifts GitHub's 60 requests/hour limit.
+# usage: scripts/fetch --cache DIR --variant bpi-r4pro --device sdmmc|emmc
+#                      --ram 4|8 --kernel 6.18|7.2 [--uboot-release TAG]
+#                      [--kernel-release TAG] [--no-kernel]
+#   --no-kernel  skip the kernel (built from source by scripts/kernel)
+import argparse
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+FIRMWARE_REPO = "https://gitlab.com/kernel-firmware/linux-firmware.git"
+FIRMWARE_DIRS = ["aeonsemi", "airoha", "inside-secure", "mediatek"]
+REGDB_URL = "https://git.kernel.org/pub/scm/linux/kernel/git/wens/wireless-regdb.git/plain/"
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--cache", required=True)
+ap.add_argument("--variant", required=True)
+ap.add_argument("--device", required=True, choices=["sdmmc", "emmc"])
+ap.add_argument("--ram", required=True, type=int, choices=[4, 8])
+ap.add_argument("--kernel", required=True)
+ap.add_argument("--uboot-release", default="")
+ap.add_argument("--kernel-release", default="")
+ap.add_argument("--no-kernel", action="store_true")
+args = ap.parse_args()
+
+
+def log(msg):
+    print(msg, file=sys.stderr)
+
+
+def get(url, headers=None):
+    req = urllib.request.Request(url, headers={"User-Agent": "bpi-r4-build", **(headers or {})})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.read()
+        except (urllib.error.URLError, TimeoutError) as e:
+            # a missing release won't appear on retry
+            if attempt == 2 or getattr(e, "code", 500) < 500:
+                sys.exit(f"{url}: {e}")
+            time.sleep(5)
+
+
+def github(path):
+    headers = {"Accept": "application/vnd.github+json"}
+    if os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
+    return json.loads(get("https://api.github.com/repos/" + path, headers))
+
+
+def download(url, dest, refresh=False):
+    if os.path.exists(dest) and not refresh:
+        return dest
+    log(f"downloading {os.path.basename(dest)}...")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest + ".part", "wb") as f:
+        f.write(get(url))
+    os.replace(dest + ".part", dest)
+    return dest
+
+
+def asset(release, name, subdir):
+    for a in release["assets"]:
+        if a["name"] == name:
+            dest = os.path.join(args.cache, subdir, release["tag_name"], name)
+            return download(a["browser_download_url"], dest)
+    sys.exit(f"{release['tag_name']} has no {name}")
+
+
+out = {}
+
+# u-boot: the newest release unless pinned
+tag = args.uboot_release
+uboot = github("frank-w/u-boot/releases/" + (f"tags/{tag}" if tag else "latest"))
+v, dev = args.variant, args.device
+mem = "_8GB" if args.ram == 8 else ""
+out["UBOOT_RELEASE"] = uboot["tag_name"]
+out["UBOOT_IMG"] = asset(uboot, f"{v}_{dev}.img.gz", "uboot")
+out["UBOOT_FIP"] = out["UBOOT_BL2"] = out["UBOOT_FIP_STOCK"] = out["UBOOT_BL2_STOCK"] = ""
+if args.ram == 8:
+    out["UBOOT_FIP"] = asset(uboot, f"{v}_{dev}_8GB_fip.bin", "uboot")
+    if dev == "sdmmc":
+        out["UBOOT_BL2"] = asset(uboot, f"{v}_sdmmc_8GB_bl2.img", "uboot")
+        out["UBOOT_BL2_STOCK"] = asset(uboot, f"{v}_sdmmc_bl2.img", "uboot")
+    else:
+        # the eMMC image's bl2 partition is empty: check by its fip
+        out["UBOOT_FIP_STOCK"] = asset(uboot, f"{v}_emmc_fip.bin", "uboot")
+out["EMMC_BL2"] = asset(uboot, f"{v}_emmc{mem}_bl2.img", "uboot") if dev == "emmc" else ""
+
+if not args.no_kernel:
+    # kernel: the branch's newest CI build unless pinned; one tarball for the
+    # whole R4 family
+    branch = re.compile(rf"CI-BUILD-{re.escape(args.kernel)}-main-")
+    tag = args.kernel_release
+    if tag:
+        if not branch.match(tag):
+            sys.exit(f"kernel release {tag} isn't a {args.kernel} CI build")
+        kernel = github(f"frank-w/BPI-Router-Linux/releases/tags/{tag}")
+    else:
+        releases = github("frank-w/BPI-Router-Linux/releases?per_page=100")
+        kernel = next((r for r in releases if branch.match(r["tag_name"])
+                       and any(a["name"].startswith("bpi-r4_") for a in r["assets"])), None)
+        if not kernel:
+            sys.exit(f"no {args.kernel} CI build among the latest kernel releases")
+    tars = [a["name"] for a in kernel["assets"] if re.fullmatch(r"bpi-r4_.+\.tar\.gz", a["name"])]
+    if len(tars) != 1:
+        sys.exit(f"{kernel['tag_name']} has {len(tars)} bpi-r4_*.tar.gz, expected 1")
+    out["KERNEL_RELEASE"] = kernel["tag_name"]
+    out["KERNEL_TAR"] = asset(kernel, tars[0], "kernel")
+    out["KERNEL_VERSION"] = re.fullmatch(r"bpi-r4_(.+)\.tar\.gz", tars[0])[1]
+
+# firmware: a sparse checkout of just the directories the image takes
+fw = os.path.join(args.cache, "linux-firmware")
+git = ["git", "-C", fw, "-c", "advice.detachedHead=false"]
+if not os.path.isdir(os.path.join(fw, ".git")):
+    log("cloning linux-firmware...")
+    subprocess.run(["git", "clone", "-q", "--depth=1", "--filter=blob:none", "--sparse",
+                    FIRMWARE_REPO, fw], check=True)
+else:
+    log("updating linux-firmware...")
+    subprocess.run(git + ["fetch", "-q", "--depth=1", "origin", "main"], check=True)
+    subprocess.run(git + ["reset", "-q", "--hard", "FETCH_HEAD"], check=True)
+# every run, so directories added to the list arrive in an existing clone
+subprocess.run(git + ["sparse-checkout", "set", "--no-cone"]
+               + [f"/{d}/" for d in FIRMWARE_DIRS], check=True)
+out["FIRMWARE_DIR"] = fw
+out["FIRMWARE_COMMIT"] = subprocess.run(git + ["log", "-1", "--format=%h %cs"], check=True,
+                                        capture_output=True, text=True).stdout.strip()
+
+regdb = os.path.join(args.cache, "regdb")
+for f in ["regulatory.db", "regulatory.db.p7s"]:
+    download(REGDB_URL + f, os.path.join(regdb, f), refresh=True)
+out["REGDB_DIR"] = regdb
+
+for k, val in out.items():
+    print(f"{k}={shlex.quote(val)}")

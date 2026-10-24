@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+# Resolve build.sh's image options against Kconfig and print them as shell
+# assignments (CONFIG_<name>=<value>, bools as y or empty, options the
+# config doesn't use empty) for build.sh to eval. The base config is --config, else configs/<board>_defconfig for
+# --board, else .config, else configs/r4pro-8x_defconfig; the other options
+# override single choices in it and fail if the config doesn't allow them
+# (e.g. --board r4pro4e --kernel 6.18). Free-text options are checked too.
+# PACKAGE_OPTIONS lists the packages the Packages menu's options select.
+import argparse
+import ipaddress
+import os
+import re
+import shlex
+import sys
+
+try:
+    import kconfiglib
+except ImportError:
+    sys.exit("kconfiglib missing: sudo apt install python3-kconfiglib")
+
+top = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# build.sh --board value -> defconfig
+board_defconfig = {"r4pro": "r4pro-8x", "r4pro4e": "r4pro-4e", "r4": "r4"}
+# option -> {value: choice symbol}
+choices = {
+    "board": {"r4pro": "BOARD_R4PRO_8X", "r4pro4e": "BOARD_R4PRO_4E", "r4": "BOARD_R4"},
+    "device": {"sdmmc": "DEVICE_SDMMC", "emmc": "DEVICE_EMMC"},
+    "kernel": {"6.18": "KERNEL_6_18", "7.2": "KERNEL_7_2"},
+    "ram": {"4": "RAM_4G", "8": "RAM_8G"},
+    "ports": {"sfp": "PORTS_SFP", "phy": "PORTS_PHY"},
+    "distro": {"trixie": "DISTRO_TRIXIE", "bookworm": "DISTRO_BOOKWORM", "noble": "DISTRO_NOBLE",
+               "resolute": "DISTRO_RESOLUTE"},
+}
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--config")
+for opt in choices:
+    ap.add_argument("--" + opt)
+ap.add_argument("--write", help="also write the resolved config here")
+args = ap.parse_args()
+
+for opt, values in choices.items():
+    val = getattr(args, opt)
+    if val is not None and val not in values:
+        sys.exit(f"unsupported {opt} '{val}' (use {' or '.join(values)})")
+
+if args.config:
+    base = args.config
+elif args.board:
+    base = os.path.join(top, "configs", board_defconfig[args.board] + "_defconfig")
+elif os.path.exists(os.path.join(top, ".config")):
+    base = os.path.join(top, ".config")
+else:
+    base = os.path.join(top, "configs", "r4pro-8x_defconfig")
+if not os.path.exists(base):
+    sys.exit(f"no config {base}")
+
+kconf = kconfiglib.Kconfig(os.path.join(top, "Kconfig"), warn_to_stderr=False)
+# unknown or invalid symbols in the base config: a typo would otherwise
+# quietly build something else
+kconf.warn_assign_undef = True
+kconf.load_config(base)
+# options since removed: older configs still set them, harmlessly
+retired = {"PKG_DIAG", "MODEM_ECM", "MODEM_METRIC"}
+warnings = [w for w in kconf.warnings
+            if not re.search(r"undefined symbol (\w+)$", w) or
+            re.search(r"undefined symbol (\w+)$", w)[1] not in retired]
+if warnings:
+    sys.exit("\n".join(warnings))
+
+base = os.path.abspath(base)
+source = os.path.relpath(base, top) if base.startswith(top + "/") else base
+for opt, values in choices.items():
+    val = getattr(args, opt)
+    if val is None:
+        continue
+    sym = kconf.syms[values[val]]
+    sym.set_value(2)
+    if sym.tri_value != 2:
+        # the whole choice may be hidden (ports on the R4); a choice
+        # symbol's own dependencies end in "&& <choice>"
+        dep = sym.choice.direct_dep if not sym.choice.visibility else sym.direct_dep
+        dep = kconfiglib.expr_str(dep).replace(" && <choice>", "")
+        sys.exit(f"--{opt} {val} isn't possible with {source}: "
+                 f"{values[val]} needs {dep}")
+    source += f" --{opt} {val}"
+
+# free text that ends up in config files, URLs and command lines; symbols
+# whose dependencies aren't met (GPS_DEVICE without GPS_TIME) are skipped
+formats = {
+    "HOSTNAME": r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?",
+    "REGDOM": r"([A-Z0-9]{2})?",
+    "EXTRA_PACKAGES": r"[a-z0-9.+:=/ -]*",
+    "IMAGE_TAG": r"[A-Za-z0-9._-]*",
+    "GPS_DEVICE": r"/dev/[A-Za-z0-9/_.-]+",
+    "GPS_OFFSET": r"-?[0-9]+(\.[0-9]+)?",
+    "DEBIAN_MIRROR": r"https?://[A-Za-z0-9._~:/@%+-]+",
+    "UBUNTU_MIRROR": r"https?://[A-Za-z0-9._~:/@%+-]+",
+    "UBOOT_RELEASE": r"[A-Za-z0-9._-]*",
+    "KERNEL_RELEASE": r"[A-Za-z0-9._-]*",
+    "DT_OVERLAYS": r"[A-Za-z0-9._ -]*",
+    "KERNEL_GIT": r"(https?://|git@|/|\.)[A-Za-z0-9._~:/@%+-]+",
+    "KERNEL_REF": r"[A-Za-z0-9._/-]*",
+    "KERNEL_PATCHES": r"[A-Za-z0-9._/~+-]*",
+    "KERNEL_TREE": r"[A-Za-z0-9._/~+-]*",
+    "KERNEL_DEFCONFIG": r"[A-Za-z0-9._/~+-]*",
+    "KERNEL_FRAGMENTS": r"[A-Za-z0-9._/~+ -]*",
+    "KERNEL_LOCALVERSION": r"(-[A-Za-z0-9._+]+)?",
+    "MODEM_APN": r"[A-Za-z0-9._-]*",
+    "LOCALES": r"[A-Za-z0-9_.@ -]*",
+}
+errors = []
+for name, fmt in formats.items():
+    sym = kconf.syms[name]
+    if sym.config_string and not re.fullmatch(fmt, sym.str_value):
+        errors.append(f"invalid {name} '{sym.str_value}'")
+lan = kconf.syms["LAN_ADDRESS"]
+if lan.config_string:
+    # a host address; at most /24 for the DHCP server's pool (.101-.250)
+    maxlen = 24 if kconf.syms["DHCP_SERVER"].tri_value == 2 else 30
+    try:
+        iface = ipaddress.IPv4Interface(lan.str_value)
+        net = iface.network
+        if not 8 <= net.prefixlen <= maxlen or iface.ip in (net.network_address, net.broadcast_address):
+            raise ValueError
+    except ValueError:
+        errors.append(f"invalid LAN_ADDRESS '{lan.str_value}' (a host address, /8 to /{maxlen})")
+def sym(name):
+    return kconf.syms[name].str_value if kconf.syms[name].config_string else ""
+if kconf.syms["WIFI_AP"].tri_value == 2:
+    if not sym("REGDOM"):
+        errors.append("WIFI_AP needs REGDOM (hostapd's country_code)")
+    ssid = sym("WIFI_SSID") or sym("HOSTNAME")
+    if len(ssid.encode()) > 32 or not ssid.isprintable():
+        errors.append(f"invalid WIFI_SSID '{ssid}' (up to 32 bytes, printable)")
+    if not any(kconf.syms[b].tri_value == 2 for b in ("WIFI_5G", "WIFI_6G", "WIFI_2G4")):
+        errors.append("WIFI_AP needs a band: WIFI_5G, WIFI_6G or WIFI_2G4")
+    ch = sym("WIFI_CHANNEL_5G")
+    valid = [*range(36, 65, 4), *range(100, 145, 4), *range(149, 178, 4)]
+    if ch and int(ch) not in [0, *valid]:
+        errors.append(f"invalid WIFI_CHANNEL_5G {ch} (0, 36-64, 100-144 or 149-177, in steps of 4)")
+    ch = sym("WIFI_CHANNEL_6G")
+    if ch and int(ch) not in [0, *range(1, 234, 4)]:
+        errors.append(f"invalid WIFI_CHANNEL_6G {ch} (0, or 1-233 in steps of 4)")
+wifi = kconf.syms["WIFI_ADDRESS"]
+if wifi.config_string:
+    # a host address; at most /24 for the DHCP server's pool (.101-.250)
+    try:
+        iface = ipaddress.IPv4Interface(wifi.str_value)
+        net = iface.network
+        if not 8 <= net.prefixlen <= 24 or iface.ip in (net.network_address, net.broadcast_address):
+            raise ValueError
+    except ValueError:
+        errors.append(f"invalid WIFI_ADDRESS '{wifi.str_value}' (a host address, /8 to /24)")
+    else:
+        try:
+            if lan.config_string and net.overlaps(ipaddress.IPv4Interface(lan.str_value).network):
+                errors.append(f"WIFI_ADDRESS {wifi.str_value} overlaps the LAN, {lan.str_value}")
+        except ValueError:
+            pass  # LAN_ADDRESS's own error is above
+if errors:
+    sys.exit("\n".join(errors))
+
+if args.write:
+    kconf.write_config(args.write, header=f"# resolved from {source}\n", save_old=False)
+# every symbol, so build.sh (set -u) can test ones whose dependencies
+# aren't met (e.g. FIREWALL on a switch): those come out empty
+for sym in kconf.unique_defined_syms:
+    val = sym.str_value if sym.config_string else ""
+    if sym.orig_type in (kconfiglib.BOOL, kconfiglib.TRISTATE) and val == "n":
+        val = ""
+    print(f"CONFIG_{sym.name}={shlex.quote(val)}")
+print(f"config_source={shlex.quote(source)}")
+# the package options' prompts name their package ("docker.io: Docker engine")
+packages = []
+for sym in kconf.unique_defined_syms:
+    if sym.name.startswith("PKG_") and sym.tri_value == 2 and sym.nodes[0].prompt:
+        m = re.match(r"([a-z0-9][a-z0-9.+-]*): ", sym.nodes[0].prompt[0])
+        if m:
+            packages.append(m[1])
+print(f"PACKAGE_OPTIONS={shlex.quote(' '.join(packages))}")

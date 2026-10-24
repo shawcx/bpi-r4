@@ -1,0 +1,19 @@
+# Guest Wi-Fi (build config WIFI_GUEST): clients on wlanbr0 reach the WAN
+# only, and the router only for DHCP and ping. Its own table, ahead of
+# nftables.conf's (which counts wlan* as LAN): a drop here is final, an
+# accept leaves the packet to that table's chains.
+table inet wifi-guest {
+	chain input {
+		type filter hook input priority filter - 1; policy accept;
+		iifname != "wlanbr0" accept
+		ct state established,related accept
+		udp dport 67 accept comment "DHCP"
+		icmp type echo-request limit rate 5/second accept
+		drop
+	}
+	chain forward {
+		type filter hook forward priority filter - 1; policy accept;
+		iifname "wlanbr0" oifname "lanbr0" drop
+		iifname "lanbr0" oifname "wlanbr0" drop
+	}
+}

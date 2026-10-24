@@ -1,0 +1,10 @@
+[Unit]
+Description=Grow the root partition and filesystem to fill the disk
+After=systemd-remount-fs.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/grow-rootfs
+
+[Install]
+WantedBy=multi-user.target

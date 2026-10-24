@@ -1,0 +1,298 @@
+#!/bin/bash
+# Build the kernel from source into the tarball frank-w's CI publishes (and
+# scripts/mkimage takes): BPI-BOOT with the FIT image bpi-r4.itb (kernel,
+# R4/R4 Pro/R4 Lite device trees and overlays, from the tree's bpi-r4.its),
+# uImage_nodt and bpi-r4.dtb; BPI-ROOT/lib/modules. Configured by the build
+# config's kernel source options (Kconfig, "Kernel build: built from
+# source"):
+# - KERNEL_GIT at KERNEL_REF (empty: <kernel branch>-main), shallow-fetched
+#   into .cache/kernel/src, with KERNEL_PATCHES/*.patch applied (git am, in
+#   name order); or KERNEL_TREE, a local checkout built as it is
+# - KERNEL_DEFCONFIG (empty: the tree's mt7988a_bpi-r4_defconfig) with the
+#   KERNEL_FRAGMENTS and the kernel extras' fragments (KERNEL_EXTRA_FRAGMENTS:
+#   AppArmor, BPF tracing) merged on top; a fragment value Kconfig drops
+#   (unmet dependency) is an error
+# - KERNEL_LOCALVERSION appended to the version (CI builds have -main)
+# Builds out of tree in .cache/kernel/build-<branch> (incremental), cross
+# compiling on x86_64, with ccache when installed. Prints KERNEL_TAR,
+# KERNEL_VERSION and KERNEL_RELEASE as shell assignments, like scripts/fetch.
+# usage: scripts/kernel [--config FILE] [build | menuconfig [FRAGMENT] |
+#                       savedefconfig FILE | check | install HOST]
+#   --config    the build config (default .config)
+#   build       build and pack the kernel (default)
+#   menuconfig  configure as for a build, run the kernel's menuconfig, and
+#               write what changed to FRAGMENT (a config fragment to list in
+#               KERNEL_FRAGMENTS), or just show it
+#   savedefconfig  write the configured kernel's minimal defconfig to FILE
+#               (for KERNEL_DEFCONFIG)
+#   check       just check the host's build prerequisites
+#   install     build, then install on a running board over SSH (HOST, e.g.
+#               root@endpoint): the modules, the FIT as bpi-r4-<version>.itb
+#               and fit=<it> in /boot/uEnv.txt, saved first as uEnv.txt.prev
+#               on the first install. The image's bpi-r4.itb stays as the
+#               fallback: in u-boot's boot menu, Enter kernel-name,
+#               bpi-r4.itb. It refuses a host that isn't an R4 board, too
+#               little space in /boot, or a FIT without an overlay
+#               uEnv.txt's addconf names (u-boot couldn't boot it). Doesn't
+#               reboot
+set -euo pipefail
+
+top=$(cd "$(dirname "$0")/.." && pwd)
+config=$top/.config
+if [[ ${1:-} == --config ]]; then
+	config=$2
+	shift 2
+fi
+cmd=${1:-build}
+arg=${2:-}
+case "$cmd" in
+	build|menuconfig|check) ;;
+	install) [[ -n $arg ]] || { echo "install needs a host, e.g. root@endpoint" >&2; exit 1; } ;;
+	savedefconfig) [[ -n $arg ]] || { echo "savedefconfig needs an output file" >&2; exit 1; } ;;
+	*) sed -n 's/^# \{0,1\}//; /^usage:/,/^set -e/p' "$0" | sed '$d' >&2; exit 1 ;;
+esac
+# progress to stderr; stdout carries the assignments
+exec 3>&1 1>&2
+
+eval "$("$top/scripts/resolve-config" --config "$config")"
+if [[ -z $CONFIG_KERNEL_SOURCE ]]; then
+	echo "the config uses frank-w's CI kernel: choose Kernel build > Built from source" >&2
+	exit 1
+fi
+repo_path() { # a path in the config: relative to this repo
+	if [[ $1 == /* ]]; then echo "$1"; else echo "$top/$1"; fi
+}
+
+# host tools, one apt line for what's missing
+cross=
+gccpkg=gcc
+if [[ $(uname -m) != aarch64 ]]; then
+	cross=aarch64-linux-gnu-
+	gccpkg=gcc-aarch64-linux-gnu
+fi
+missing=()
+for t in make:make bc:bc bison:bison flex:flex mkimage:u-boot-tools python3:python3 \
+	"${cross}gcc:$gccpkg" depmod:kmod; do
+	PATH=$PATH:/usr/sbin:/sbin command -v "${t%%:*}" >/dev/null || missing+=("${t#*:}")
+done
+[[ -e /usr/include/openssl/ssl.h ]] || missing+=(libssl-dev)
+[[ -e /usr/include/gelf.h ]] || missing+=(libelf-dev)
+[[ $cmd != menuconfig || -e /usr/include/ncurses.h ]] || missing+=(libncurses-dev)
+# BTF, for BPF tracing
+[[ -z ${CONFIG_KERNEL_TRACING:-} ]] || command -v pahole >/dev/null || missing+=(dwarves)
+if (( ${#missing[@]} )); then
+	echo "missing kernel build prerequisites: sudo apt install ${missing[*]}" >&2
+	exit 1
+fi
+[[ $cmd != check ]] || exit 0
+
+cache=$top/.cache/kernel
+mkdir -p "$cache"
+exec 8>"$cache/lock"
+flock -n 8 || { echo "another kernel build is running" >&2; exit 1; }
+
+# source
+if [[ -n $CONFIG_KERNEL_TREE ]]; then
+	src=$(repo_path "$CONFIG_KERNEL_TREE")
+	[[ -e $src/Makefile && -e $src/bpi-r4.its ]] || { echo "$src isn't a frank-w kernel tree" >&2; exit 1; }
+	desc="tree $src ($(git -C "$src" describe --always --dirty 2>/dev/null || echo "not git"))"
+else
+	src=$cache/src
+	ref=${CONFIG_KERNEL_REF:-$CONFIG_KERNEL-main}
+	[[ -d $src/.git ]] || git init -q "$src"
+	git -C "$src" remote remove origin 2>/dev/null || true
+	git -C "$src" remote add origin "$CONFIG_KERNEL_GIT"
+	echo "fetching $ref from $CONFIG_KERNEL_GIT..."
+	# a failed git am of an earlier run
+	git -C "$src" am --abort 2>/dev/null || true
+	git -C "$src" fetch -q --depth 1 --no-tags origin "$ref"
+	git -C "$src" -c advice.detachedHead=false checkout -q -f --detach FETCH_HEAD
+	git -C "$src" clean -q -fdx
+	desc="$CONFIG_KERNEL_GIT $ref $(git -C "$src" rev-parse --short=12 HEAD)"
+	if [[ -n $CONFIG_KERNEL_PATCHES ]]; then
+		pdir=$(repo_path "$CONFIG_KERNEL_PATCHES")
+		shopt -s nullglob
+		patches=("$pdir"/*.patch)
+		shopt -u nullglob
+		if (( ${#patches[@]} )); then
+			echo "applying ${#patches[@]} patches from $pdir..."
+			git -C "$src" -c user.name=build -c user.email=build@localhost am -q --3way "${patches[@]}"
+			desc+=" + ${#patches[@]} patches"
+		fi
+	fi
+fi
+
+build=$cache/build-$CONFIG_KERNEL
+mkdir -p "$build"
+export ARCH=arm64 LOCALVERSION=$CONFIG_KERNEL_LOCALVERSION
+# overlays need the base DTBs' symbols; set in the environment so the
+# kernel's own DTC_FLAGS still append
+export DTC_FLAGS=-@
+kmake=(make -C "$src" O="$build" -j"$(nproc)" --no-print-directory)
+[[ -z $cross ]] || kmake+=(CROSS_COMPILE="$cross")
+if command -v ccache >/dev/null; then
+	kmake+=(CC="ccache ${cross}gcc" HOSTCC="ccache gcc")
+fi
+
+echo "configuring..."
+if [[ -n $CONFIG_KERNEL_DEFCONFIG ]]; then
+	cp "$(repo_path "$CONFIG_KERNEL_DEFCONFIG")" "$build/.config"
+	"${kmake[@]}" -s olddefconfig
+else
+	"${kmake[@]}" -s mt7988a_bpi-r4_defconfig
+fi
+frags=()
+fraglist="$CONFIG_KERNEL_FRAGMENTS${CONFIG_KERNEL_EXTRA_FRAGMENTS:+ $CONFIG_KERNEL_EXTRA_FRAGMENTS}"
+for f in $fraglist; do frags+=("$(repo_path "$f")"); done
+if (( ${#frags[@]} )); then
+	desc+=", fragments: $fraglist"
+	(cd "$build" && "$src/scripts/kconfig/merge_config.sh" -m -O "$build" .config "${frags[@]}" >/dev/null)
+	"${kmake[@]}" -s olddefconfig
+	# every fragment line must survive olddefconfig
+	dropped=
+	for f in "${frags[@]}"; do
+		while IFS= read -r line; do
+			[[ $line =~ ^(CONFIG_[A-Za-z0-9_]+=.*|#\ CONFIG_[A-Za-z0-9_]+\ is\ not\ set)$ ]] || continue
+			sym=${line#\# }
+			sym=${sym%%[= ]*}
+			want=$line
+			[[ $want != *=n ]] || want="# $sym is not set"
+			got=$(grep -E "^($sym=|# $sym is not set)" "$build/.config" || echo "# $sym is not set")
+			[[ $got == "$want" ]] || dropped+=$'\n'"  $line (now: $got) in $(basename "$f")"
+		done < "$f"
+	done
+	if [[ -n $dropped ]]; then
+		echo "fragment values the kernel config doesn't keep (missing dependencies?):$dropped" >&2
+		exit 1
+	fi
+fi
+
+case "$cmd" in
+	menuconfig)
+		cp "$build/.config" "$build/.config.before"
+		"${kmake[@]}" menuconfig
+		changes=$("$src/scripts/diffconfig" -m "$build/.config.before" "$build/.config")
+		if [[ -z $changes ]]; then
+			echo "no changes"
+		elif [[ -n $arg ]]; then
+			printf '%s\n' "$changes" >> "$(repo_path "$arg")"
+			echo "added to $arg (list it in KERNEL_FRAGMENTS):"
+			printf '%s\n' "$changes"
+		else
+			echo "changes (save them with: make kernel-menuconfig FRAGMENT=<file>):"
+			printf '%s\n' "$changes"
+		fi
+		exit 0 ;;
+	savedefconfig)
+		"${kmake[@]}" -s savedefconfig
+		cp "$build/defconfig" "$(repo_path "$arg")"
+		echo "wrote $arg (set KERNEL_DEFCONFIG to it)"
+		exit 0 ;;
+esac
+
+version=$(make -s -C "$src" --no-print-directory kernelversion)$LOCALVERSION
+echo "building $version ($desc)..."
+"${kmake[@]}"
+release=$("${kmake[@]}" -s kernelrelease)
+
+echo "packing $release..."
+stage=$cache/stage
+rm -rf "$stage"
+mkdir -p "$stage/BPI-BOOT" "$stage/BPI-ROOT/lib/firmware"
+# the FIT source names its files relative to the build output
+sed "s/%version%/$version/" "$src/bpi-r4.its" > "$build/bpi-r4.its"
+(cd "$build" && mkimage -f bpi-r4.its "$stage/BPI-BOOT/bpi-r4.itb" >/dev/null)
+mkimage -A arm -O linux -T kernel -C none -a 40080000 -e 40080000 -n "Linux Kernel $version" \
+	-d "$build/arch/arm64/boot/Image" "$stage/BPI-BOOT/uImage_nodt" >/dev/null
+cp "$build/arch/arm64/boot/dts/mediatek/mt7988a-bananapi-bpi-r4.dtb" "$stage/BPI-BOOT/bpi-r4.dtb"
+# lib/modules even where the host's kmod says usr/lib/modules (which newer
+# kernels follow): the tarball layout is CI's
+# stripped: debug info (BPF tracing's BTF needs it) would make them huge
+"${kmake[@]}" -s INSTALL_MOD_PATH="$stage/BPI-ROOT" KERNEL_MODULE_DIRECTORY=/lib/modules INSTALL_MOD_STRIP=1 \
+	DEPMOD="$(PATH=$PATH:/usr/sbin:/sbin command -v depmod)" modules_install
+[[ -d $stage/BPI-ROOT/lib/modules/$release ]] ||
+	{ echo "modules_install didn't make lib/modules/$release" >&2; exit 1; }
+# points at this host's build directory
+rm -f "$stage/BPI-ROOT/lib/modules/$release/build"
+mkdir -p "$cache/out"
+tar=$cache/out/bpi-r4_$version.tar.gz
+tar -C "$stage" --owner=root --group=root -czf "$tar.part" BPI-BOOT BPI-ROOT
+mv "$tar.part" "$tar"
+rm -rf "$stage"
+echo "kernel $(basename "$tar")"
+
+if [[ $cmd == install ]]; then
+	host=$arg
+	itb=bpi-r4-$version.itb
+	ssh=(ssh -o BatchMode=yes "$host")
+	echo "checking $host..."
+	"${ssh[@]}" true || { echo "can't ssh to $host" >&2; exit 1; }
+	compat=$("${ssh[@]}" "tr '\\0' ' ' < /proc/device-tree/compatible" 2>/dev/null || true)
+	if [[ $compat != *mediatek,mt7988a* && $compat != *mediatek,mt7987a* ]]; then
+		echo "$host isn't a BPI-R4 family board (compatible: ${compat:-none})" >&2
+		exit 1
+	fi
+	uenv=$("${ssh[@]}" cat /boot/uEnv.txt) ||
+		{ echo "no /boot/uEnv.txt on $host (BPI-BOOT not mounted?)" >&2; exit 1; }
+	fit=$(mktemp)
+	tar -xzOf "$tar" BPI-BOOT/bpi-r4.itb > "$fit"
+	lacking=
+	for ov in $(sed -n 's/^addconf=//p' <<< "$uenv" | tr '#' ' '); do
+		grep -qaF -- "$ov" "$fit" || lacking+=" $ov"
+	done
+	size=$(stat -c %s "$fit")
+	rm -f "$fit"
+	if [[ -n $lacking ]]; then
+		echo "the new FIT lacks overlays uEnv.txt's addconf names on $host:$lacking" >&2
+		echo "(u-boot couldn't boot it; edit addconf in $host:/boot/uEnv.txt first)" >&2
+		exit 1
+	fi
+	free=$("${ssh[@]}" "df --output=avail -B1 /boot | tail -1")
+	# a reinstall of the same version replaces the file, needing no more room
+	old=$("${ssh[@]}" "stat -c %s /boot/$itb 2>/dev/null || echo 0")
+	if (( free + old < size + 1048576 )); then
+		echo "/boot on $host has $free bytes free; $itb needs $size" >&2
+		exit 1
+	fi
+	if "${ssh[@]}" test -d "/lib/modules/$release"; then
+		echo "note: replacing $host:/lib/modules/$release; a fallback kernel of the same"
+		echo "release would lose its modules (a new Version suffix per build avoids that)"
+	fi
+	running=$("${ssh[@]}" uname -r)
+	echo "copying $(basename "$tar") to $host..."
+	"${ssh[@]}" "cat > /tmp/kernel-install.tar.gz" < "$tar"
+	"${ssh[@]}" bash -s -- "$release" "$itb" <<'EOF'
+set -euo pipefail
+release=$1
+itb=$2
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp" /tmp/kernel-install.tar.gz' EXIT
+tar -C "$tmp" -xzf /tmp/kernel-install.tar.gz
+# modules first: until uEnv.txt points at the new FIT nothing uses them
+rm -rf "/lib/modules/$release.new"
+cp -a "$tmp/BPI-ROOT/lib/modules/$release" "/lib/modules/$release.new"
+rm -rf "/lib/modules/$release"
+mv "/lib/modules/$release.new" "/lib/modules/$release"
+depmod "$release"
+cp "$tmp/BPI-BOOT/bpi-r4.itb" "/boot/$itb.new"
+mv -f "/boot/$itb.new" "/boot/$itb"
+# as it was before the first install, to go back to the image's kernel
+[[ -e /boot/uEnv.txt.prev ]] || cp /boot/uEnv.txt /boot/uEnv.txt.prev
+sed -i '/^fit=/d' /boot/uEnv.txt
+echo "fit=$itb" >> /boot/uEnv.txt
+sync
+EOF
+	cat <<EOF
+installed $release on $host (running: $running): /boot/$itb, uEnv.txt fit=$itb
+reboot to use it. If it doesn't boot: on the serial console, in u-boot's
+boot menu (3 s), Enter kernel-name to boot from SD/EMMC, bpi-r4.itb; then
+cp /boot/uEnv.txt.prev /boot/uEnv.txt
+EOF
+	exit 0
+fi
+
+{
+	printf 'KERNEL_TAR=%q\n' "$tar"
+	printf 'KERNEL_VERSION=%q\n' "$version"
+	printf 'KERNEL_RELEASE=%q\n' "source: $desc"
+} >&3

@@ -1,0 +1,14 @@
+# Wi-Fi access points (build config WIFI=ap): wifi-ap sets up an interface
+# per band from /etc/default/wifi-ap and starts wifi-ap@<interface> on each
+[Unit]
+Description=Wi-Fi access points
+After=systemd-networkd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/wifi-ap start
+ExecStop=/usr/local/sbin/wifi-ap stop
+
+[Install]
+WantedBy=multi-user.target

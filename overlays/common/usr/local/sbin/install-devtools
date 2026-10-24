@@ -1,0 +1,65 @@
+#!/bin/sh
+# Install the tools for building Debian packages on the board:
+# - from Debian/Ubuntu source packages: apt-get source / apt-get build-dep,
+#   dpkg-buildpackage, debuild (deb-src entries are added if missing)
+# - from packaging git repositories: git-buildpackage, pristine-tar
+# - from upstream sources: dh-make, debhelper and the common build systems
+#   (autotools, cmake, meson/ninja, python)
+# --sbuild also installs sbuild and mmdebstrap for clean builds in an unshare
+# chroot (sbuild --chroot-mode=unshare), which keeps build dependencies off
+# the board itself.
+# Kernel headers and modules can't be installed (apt pins distro kernels out,
+# see /etc/apt/preferences.d/no-distro-kernel), so DKMS packages won't build.
+# usage: install-devtools [--sbuild]
+set -eu
+
+sbuild=
+case "${1:-}" in
+	--sbuild) sbuild=1 ;;
+	"") ;;
+	*) echo "usage: $0 [--sbuild]" >&2; exit 1 ;;
+esac
+if [ "$(id -u)" -ne 0 ]; then
+	echo "run as root" >&2
+	exit 1
+fi
+
+pkgs="
+	build-essential dpkg-dev fakeroot debhelper dh-make devscripts equivs
+	quilt lintian git git-buildpackage pristine-tar
+	autoconf automake autopoint libtool pkgconf gettext bison flex
+	cmake meson ninja-build
+	dh-python python3-all python3-setuptools pybuild-plugin-pyproject
+	ccache gnupg curl ca-certificates xz-utils zstd unzip patchutils
+	liblwp-protocol-https-perl libgit-wrapper-perl libdistro-info-perl
+	python3-debian python3-apt python3-requests dctrl-tools
+"
+[ -z "$sbuild" ] || pkgs="$pkgs sbuild mmdebstrap uidmap"
+
+# apt-get source/build-dep need the deb-src twin of every deb line
+if ! grep -rqs '^deb-src ' /etc/apt/sources.list /etc/apt/sources.list.d/ &&
+	! grep -rqs '^Types:.*deb-src' /etc/apt/sources.list.d/; then
+	if [ -f /etc/apt/sources.list ] && grep -q '^deb ' /etc/apt/sources.list; then
+		echo "adding deb-src lines to /etc/apt/sources.list"
+		sed -n 's/^deb /deb-src /p' /etc/apt/sources.list >> /etc/apt/sources.list
+	else
+		echo "no deb-src sources configured; apt-get source/build-dep won't work" >&2
+	fi
+fi
+
+apt-get update
+# no recommends: they add ~100MB and a mail server (default-mta); the ones
+# uscan, dch, wrap-and-sort and gbp need are listed above instead
+# shellcheck disable=SC2086
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $pkgs
+apt-get clean
+
+if [ -n "$sbuild" ]; then
+	cat <<-'EOF'
+
+	sbuild: build in a throwaway unshare chroot (no schroot setup needed), e.g.
+	  mkdir -p ~/.cache/sbuild
+	  mmdebstrap --variant=buildd --include=ca-certificates trixie ~/.cache/sbuild/trixie-arm64.tar.zst
+	  sbuild --chroot-mode=unshare -d trixie <package>.dsc
+	EOF
+fi

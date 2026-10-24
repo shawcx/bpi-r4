@@ -1,0 +1,344 @@
+#!/bin/bash
+# Check a built image offline, without root, against the config it was built
+# from (<image>.config) and its manifest and package list:
+# - u-boot: the bl2 and fip partitions against the release's files in
+#   .cache/dl, where the build downloaded them
+# - BPI-BOOT (mtools): the kernel FIT, uEnv.txt's settings and its overlays
+#   (each must be in the FIT)
+# - the kernel's embedded config (IKCONFIG, from the FIT) against the
+#   KERNEL_FRAGMENTS of a source build
+# - BPI-ROOT (debugfs): kernel modules, fstab, hostname, the network role's
+#   files, firewall, enabled units, first-boot state (empty machine-id, no SSH
+#   host keys), root SSH keys and password, Wi-Fi, firmware, GPS, apt sources,
+#   locales, the cellular modem setup
+# - packages: what the config asks for, hostapd only with the AP
+# Prints ok/FAIL per check and exits 1 if any failed.
+# usage: scripts/check-image out/<image>.img.gz
+set -euo pipefail
+
+top=$(cd "$(dirname "$0")/.." && pwd)
+gz=${1:?usage: scripts/check-image out/<image>.img.gz}
+for f in "$gz" "$gz.config" "$gz.manifest" "$gz.packages"; do
+	# images from before the Kconfig build have no .config
+	[[ -e $f ]] || { echo "no $f" >&2; exit 1; }
+done
+debugfs=$(PATH=$PATH:/usr/sbin:/sbin command -v debugfs) ||
+	{ echo "debugfs missing: sudo apt install e2fsprogs" >&2; exit 1; }
+export MTOOLS_SKIP_CHECK=1
+eval "$("$top/scripts/resolve-config" --config "$gz.config")"
+
+work=$(mktemp -d -p "$top/.cache" check.XXXXXX)
+trap 'rm -rf "$work"' EXIT
+img=$work/image.img
+echo "unpacking $(basename "$gz")..."
+pigz -dc "$gz" | dd of="$img" bs=1M iflag=fullblock conv=sparse status=none
+
+fails=0
+check() { # <what> <command...>: ok if the command succeeds
+	local what=$1
+	shift
+	if "$@"; then echo "ok    $what"; else echo "FAIL  $what"; fails=$((fails + 1)); fi
+}
+skip() { echo "skip  $*"; }
+part() { # <number>: start and size in 512-byte sectors
+	partx -g -o START,SECTORS -n "$1" "$img"
+}
+starts_with() { # <partition> <file>: the partition begins with the file
+	local p start
+	p=$(part "$1")
+	read -r start _ <<< "$p"
+	cmp -s -n "$(stat -c %s "$2")" "$2" "$img" 0 $((start * 512))
+}
+empty_part() { # <partition>
+	local p start size
+	p=$(part "$1")
+	read -r start size <<< "$p"
+	cmp -s -n $((size * 512)) /dev/zero "$img" 0 $((start * 512))
+}
+p=$(part 5)
+read -r boot_start _ <<< "$p"
+p=$(part 6)
+read -r root_start _ <<< "$p"
+boot=$img@@$((boot_start * 512))
+root="$img?offset=$((root_start * 512))"
+rcat() { "$debugfs" -R "cat $1" "$root" 2>/dev/null; }
+rexists() { ! "$debugfs" -R "stat $1" "$root" 2>&1 | grep -q 'File not found'; }
+rmissing() { ! rexists "$1"; }
+rlink() { "$debugfs" -R "stat $1" "$root" 2>/dev/null | sed -n 's/^Fast link dest: "\(.*\)"$/\1/p'; }
+rls() { # directory entries, one per line
+	"$debugfs" -R "ls -p $1" "$root" 2>/dev/null |
+		awk -F/ 'NF > 6 && $6 != "." && $6 != ".." { print $6 }'
+}
+has_line() { # <line> <text>: the text has exactly this line
+	grep -qxF -- "$1" <<< "$2"
+}
+not() { ! "$@"; }
+
+echo "config: $config_source"
+partx -o NR,START,SECTORS,NAME "$img" | sed 's/^/  /'
+
+echo "-- u-boot"
+release=$(sed -n 's/^u-boot: *\([^ ]*\).*/\1/p' "$gz.manifest")
+ub=$top/.cache/dl/uboot/$release
+variant=bpi-r4pro
+[[ $CONFIG_BOARD != r4 ]] || variant=bpi-r4
+mem=
+[[ $CONFIG_RAM != 8 ]] || mem=_8GB
+fip=$ub/${variant}_${CONFIG_DEVICE}${mem}_fip.bin
+if [[ -e $fip ]]; then check "p4 is $(basename "$fip") ($release)" starts_with 4 "$fip"
+else skip "p4: $(basename "$fip") not in .cache/dl"; fi
+if [[ $CONFIG_DEVICE == emmc ]]; then
+	check "p1 empty (eMMC boots bl2 from boot0)" empty_part 1
+	bl2=$ub/${variant}_emmc${mem}_bl2.img
+	out_bl2=${gz%.img.gz}_bl2.img
+	if [[ -e $bl2 ]]; then check "$(basename "$out_bl2") is $(basename "$bl2")" cmp -s "$out_bl2" "$bl2"
+	else skip "boot0 bl2: $(basename "$bl2") not in .cache/dl"; fi
+else
+	bl2=$ub/${variant}_sdmmc${mem}_bl2.img
+	if [[ -e $bl2 ]]; then check "p1 is $(basename "$bl2")" starts_with 1 "$bl2"
+	else skip "p1: $(basename "$bl2") not in .cache/dl"; fi
+fi
+
+echo "-- BPI-BOOT"
+mcopy -i "$boot" ::/bpi-r4.itb ::/uEnv.txt "$work"/ 2>/dev/null || true
+check "kernel FIT bpi-r4.itb" test -s "$work/bpi-r4.itb"
+check "uEnv.txt" test -s "$work/uEnv.txt"
+uenv=$(cat "$work/uEnv.txt" 2>/dev/null || true)
+sed 's/^/        /' <<< "$uenv"
+if [[ $CONFIG_BOARD == r4pro* ]]; then check "isr4pro=1" has_line isr4pro=1 "$uenv"; fi
+if [[ $CONFIG_BOARD == r4pro4e ]]; then
+	check "isr4pro4e=1" has_line isr4pro4e=1 "$uenv"
+	check "console at 115200" grep -q '^console=console=ttyS0,115200' <<< "$uenv"
+fi
+addconf=$(sed -n 's/^addconf=//p' <<< "$uenv" | tr '#' ' ')
+for ov in $addconf; do
+	check "overlay $ov in the FIT" grep -qaF -- "$ov" "$work/bpi-r4.itb"
+done
+if [[ $CONFIG_KERNEL == 7.2 ]]; then
+	case "$CONFIG_BOARD" in
+		r4pro) want="ov-pro-8x-lan-$CONFIG_PORTS ov-pro-8x-wan-$CONFIG_PORTS" ;;
+		r4pro4e) want="ov-pro-4e-wan-$CONFIG_PORTS" ;;
+		*) want= ;;
+	esac
+	for ov in $want; do check "port overlay $ov in addconf" grep -qw -- "$ov" <<< "$addconf"; done
+fi
+
+echo "-- kernel config"
+# the kernel's own config (IKCONFIG) from the FIT, against the fragments
+kimage=$(dumpimage -l "$work/bpi-r4.itb" 2>/dev/null |
+	awk '/^ *Image [0-9]+ /{n=$2} /^ *Type: *Kernel Image/{print n; exit}' || true)
+if ! command -v dumpimage >/dev/null; then
+	skip "kernel config: no dumpimage (u-boot-tools) on this host"
+elif [[ -z $kimage ]] || ! dumpimage -T flat_dt -p "$kimage" -o "$work/Image.gz" "$work/bpi-r4.itb" >/dev/null ||
+	! python3 - "$work/Image.gz" "$work/kernel.config" <<'EOF'
+import gzip, sys
+image = gzip.decompress(open(sys.argv[1], "rb").read())
+start = image.index(b"IKCFG_ST") + 8
+open(sys.argv[2], "wb").write(gzip.decompress(image[start:image.index(b"IKCFG_ED", start)]))
+EOF
+then
+	fail "kernel config: can't extract it from the FIT's kernel"
+# the manifest says which kernel went in (an older .config lacks the
+# kernel build option, and would read as today's default)
+elif ! grep -q '^kernel: *source:' "$gz.manifest"; then
+	skip "kernel config: frank-w's CI build, no fragments"
+else
+	for frag in $CONFIG_KERNEL_FRAGMENTS ${CONFIG_KERNEL_EXTRA_FRAGMENTS:-}; do
+		[[ $frag == /* ]] || frag=$top/$frag
+		bad=
+		while IFS= read -r line; do
+			[[ $line =~ ^(CONFIG_[A-Za-z0-9_]+=.*|#\ CONFIG_[A-Za-z0-9_]+\ is\ not\ set)$ ]] || continue
+			sym=${line#\# }
+			sym=${sym%%[= ]*}
+			want=$line
+			[[ $want != *=n ]] || want="# $sym is not set"
+			got=$(grep -E "^($sym=|# $sym is not set)" "$work/kernel.config" || echo "# $sym is not set")
+			[[ $got == "$want" ]] || bad+=" $sym"
+		done < "$frag"
+		check "kernel has $(basename "$frag")${bad:+ (not:$bad)}" test -z "$bad"
+	done
+fi
+
+echo "-- BPI-ROOT"
+modules=$(rls /usr/lib/modules)
+check "kernel modules: $(tr '\n' ' ' <<< "$modules")" test "$(wc -l <<< "$modules")" -eq 1 -a -n "$modules"
+fstab=$(rcat /etc/fstab)
+check "fstab: p6 on /" grep -qP '^/dev/mmcblk0p6\s+/\s' <<< "$fstab"
+check "fstab: p5 on /boot" grep -qP '^/dev/mmcblk0p5\s+/boot\s' <<< "$fstab"
+check "hostname $CONFIG_HOSTNAME" test "$(rcat /etc/hostname)" = "$CONFIG_HOSTNAME"
+check "hosts has $CONFIG_HOSTNAME" grep -qP "^127\.0\.1\.1\s+$CONFIG_HOSTNAME$" <<< "$(rcat /etc/hosts)"
+check "apt sources from $CONFIG_MIRROR" grep -q "^deb $CONFIG_MIRROR $CONFIG_DISTRO " <<< "$(rcat /etc/apt/sources.list)"
+check "distro kernels pinned out" rexists /etc/apt/preferences.d/no-distro-kernel
+
+net=/etc/systemd/network
+wan=$(rcat $net/15-wan.network)
+lanbr=$(rcat $net/25-lanbr.network)
+bind=$(rcat $net/21-lanbr-bind.network)
+if [[ $CONFIG_BOARD == r4 ]]; then
+	check "WAN matched by name" has_line Name=wan "$wan"
+	check "bridge members lan0-3" has_line "Name=lan0 lan1 lan2 lan3" "$bind"
+else
+	check "WAN matched by gmac1's DT node" has_line Property=OF_FULLNAME=/soc/ethernet@15100000/mac@1 "$wan"
+	check "R4 Pro bridge members" has_line "Name=lan0 lan1 lan2 lan3 lan4 lan5 lan6 sfp-lan" "$bind"
+	check "persistent WAN MAC (00-wan.link)" rexists $net/00-wan.link
+fi
+check "no he-ipv6 tunnel" rmissing $net/80-he-tunnel.netdev
+if [[ $CONFIG_ROLE == router ]]; then
+	check "router: WAN takes DHCP" has_line DHCP=ipv4 "$wan"
+	check "router: lanbr0 at $CONFIG_LAN_ADDRESS" has_line "Address=$CONFIG_LAN_ADDRESS" "$lanbr"
+	if [[ -n $CONFIG_DHCP_SERVER ]]; then check "router: DHCP server" has_line DHCPServer=yes "$lanbr"
+	else check "router: no DHCP server" not has_line DHCPServer=yes "$lanbr"; fi
+	check "router: IPv4 forwarding" has_line "net.ipv4.ip_forward = 1" "$(rcat /etc/sysctl.d/90-router.conf)"
+else
+	check "switch: WAN in the bridge" has_line Bridge=lanbr0 "$wan"
+	check "switch: lanbr0 takes DHCP" has_line DHCP=ipv4 "$lanbr"
+	check "switch: no forwarding" rmissing /etc/sysctl.d/90-router.conf
+fi
+
+units=$(for d in $(rls /etc/systemd/system | grep '\.wants$'); do rls "/etc/systemd/system/$d"; done)
+enabled() { has_line "$1" "$units"; }
+for u in systemd-networkd systemd-resolved ssh-hostkeys grow-rootfs; do
+	check "$u enabled" enabled "$u.service"
+done
+# Ubuntu starts sshd from ssh.socket
+check "sshd enabled" eval 'enabled ssh.service || enabled ssh.socket'
+[[ $CONFIG_BOARD != r4pro4e ]] || check "mt7988-2p5g-phy enabled" enabled mt7988-2p5g-phy.service
+if [[ -n $CONFIG_FIREWALL ]]; then
+	check "nftables enabled" enabled nftables.service
+	nft=$(rcat /etc/nftables.conf)
+	check "firewall masquerades the LAN" grep -q masquerade <<< "$nft"
+	if [[ -n $CONFIG_SSH_FROM_WAN ]]; then check "SSH from the WAN allowed" grep -q 'SSH from the WAN' <<< "$nft"
+	else check "no SSH from the WAN" not grep -q 'SSH from the WAN' <<< "$nft"; fi
+	# nft -c checks against the host kernel, which must have what the
+	# ruleset uses (elroy's Tegra kernel has no ct, limit or reject)
+	probe='table inet t {
+		chain c {
+			ct state established accept
+			limit rate 1/second accept
+			reject
+		}
+	}'
+	if ! command -v nft >/dev/null || ! unshare -rn true 2>/dev/null; then
+		skip "ruleset load: no nft or user namespaces on this host"
+	elif ! unshare -rn nft -c -f - <<< "$probe" >/dev/null 2>&1; then
+		skip "ruleset load: this host's kernel lacks nftables ct, limit or reject"
+	else
+		mkdir "$work/nftables"
+		for f in $(rls /etc/nftables | grep '\.nft$'); do
+			rcat "/etc/nftables/$f" > "$work/nftables/$f"
+		done
+		sed "s#include \"/etc/nftables/\*.nft\"#include \"$work/nftables/*.nft\"#" <<< "$nft" > "$work/nftables.conf"
+		check "ruleset loads (host nft)" unshare -rn nft -c -f "$work/nftables.conf"
+	fi
+else
+	check "nftables not enabled" not enabled nftables.service
+fi
+
+check "machine-id empty (made on first boot)" test -z "$(rcat /etc/machine-id)" -a "$(rexists /etc/machine-id && echo y)" = y
+check "no SSH host keys (made on first boot)" test -z "$(rls /etc/ssh | grep '^ssh_host_' || true)"
+if rexists /usr/sbin/make-ssl-cert; then
+	check "no snakeoil TLS key (made on first boot)" rmissing /etc/ssl/private/ssl-cert-snakeoil.key
+	check "ssl-snakeoil enabled" enabled ssl-snakeoil.service
+fi
+check "resolv.conf is systemd-resolved's stub" test "$(rlink /etc/resolv.conf)" = ../run/systemd/resolve/stub-resolv.conf
+keys=$CONFIG_AUTHORIZED_KEYS
+[[ $keys == /* ]] || keys=$top/$keys
+check "root's SSH keys are $(basename "$keys")'s" test "$(rcat /root/.ssh/authorized_keys)" = "$(grep -E '^(ssh-|ecdsa-|sk-)' "$keys")"
+check "keys-only root SSH drop-in" rexists /etc/ssh/sshd_config.d/10-endpoint.conf
+check "root password set" grep -q '^root:\$' <<< "$(rcat /etc/shadow)"
+
+fw=/usr/lib/firmware
+if [[ -n $CONFIG_REGDOM ]]; then
+	check "regulatory domain $CONFIG_REGDOM" has_line "options cfg80211 ieee80211_regdom=$CONFIG_REGDOM" "$(rcat /etc/modprobe.d/cfg80211.conf)"
+else
+	check "no regulatory domain set" rmissing /etc/modprobe.d/cfg80211.conf
+fi
+check "wireless-regdb (regulatory.db-git)" rexists $fw/regulatory.db-git
+check "AS21010 PHY firmware" rexists $fw/aeonsemi/as21x1x_fw.bin
+check "MT7988 2.5G PHY firmware" rexists $fw/mediatek/mt7988/i2p5ge-phy-pmb.bin
+check "EIP-197 firmware" rexists $fw/inside-secure/eip197_minifw/ifpp.bin
+if [[ $CONFIG_WIFI != off ]]; then
+	mtk=$(rls $fw/mediatek)
+	for f in mt7915_wa mt7915_wm mt7915_rom_patch mt7916_wa mt7916_wm mt7916_rom_patch; do
+		check "firmware mediatek/$f.bin" has_line "$f.bin" "$mtk"
+	done
+fi
+case "$CONFIG_WIFI" in
+	monitor)
+		check "no BE14 firmware (mediatek/mt7996)" rmissing $fw/mediatek/mt7996
+		check "mt7996e blacklisted" has_line "blacklist mt7996e" "$(rcat /etc/modprobe.d/no-mt7996.conf)" ;;
+	ap)
+		check "BE14 firmware (mediatek/mt7996)" rexists $fw/mediatek/mt7996
+		check "no Wi-Fi drivers blacklisted" eval 'rmissing /etc/modprobe.d/no-mt7996.conf && rmissing /etc/modprobe.d/no-wifi.conf'
+		check "wifi-ap enabled" enabled wifi-ap.service
+		check "wifi-ap's settings readable by root only" eval '"$debugfs" -R "stat /etc/default/wifi-ap" "$root" 2>/dev/null | grep -q "Mode: *0600 "'
+		ap=$(rcat /etc/default/wifi-ap)
+		bands="${CONFIG_WIFI_5G:+ 5g}${CONFIG_WIFI_6G:+ 6g}${CONFIG_WIFI_2G4:+ 2g4}"
+		check "access points: country $CONFIG_REGDOM, bands ${bands# }" eval 'has_line "COUNTRY=$CONFIG_REGDOM" "$ap" && has_line "BANDS=\"${bands# }\"" "$ap"'
+		# without showing it
+		check "access points' passphrase set" eval 'grep -qE "^PASSPHRASE=.{10}" <<< "$ap"'
+		if [[ -n $CONFIG_WIFI_NET_SUBNET ]]; then
+			check "Wi-Fi subnet $CONFIG_WIFI_ADDRESS on wlanbr0" eval 'has_line "BRIDGE=wlanbr0" "$ap" && has_line "Address=$CONFIG_WIFI_ADDRESS" "$(rcat $net/31-wlanbr.network)"'
+		else
+			check "access points in lanbr0" has_line "BRIDGE=lanbr0" "$ap"
+		fi
+		if [[ -n $CONFIG_WIFI_GUEST ]]; then
+			check "guest Wi-Fi firewall" rexists /etc/nftables/20-wifi-guest.nft
+		fi ;;
+	off)
+		check "Wi-Fi drivers blacklisted" has_line "blacklist mt7915e" "$(rcat /etc/modprobe.d/no-wifi.conf)" ;;
+esac
+if [[ $CONFIG_WIFI != ap ]]; then check "no access points" not enabled wifi-ap.service; fi
+if [[ " $PACKAGE_OPTIONS " == *" systemd-zram-generator "* ]]; then
+	check "zram swap configured" eval 'rexists /etc/systemd/zram-generator.conf || rexists /usr/lib/systemd/zram-generator.conf'
+fi
+if [[ -n $CONFIG_LOCALES ]]; then
+	# trixie's /etc/default/locale is a symlink to /etc/locale.conf
+	check "LANG ${CONFIG_LOCALES%% *}" has_line "LANG=${CONFIG_LOCALES%% *}" "$(rcat /etc/default/locale; rcat /etc/locale.conf)"
+	check "locales generated" rexists /usr/lib/locale/locale-archive
+fi
+case "${CONFIG_MODEM:-none}" in
+	mm)
+		check "ModemManager enabled" enabled ModemManager.service
+		check "modem-connect enabled" enabled modem-connect.service
+		check "wwan interfaces left to ModemManager" has_line Unmanaged=yes "$(rcat $net/40-wwan.network)"
+		check "modem connection dispatcher" rexists /etc/ModemManager/connection.d/10-wwan
+		check "ModemManager ignores USB gadgets and u-blox GPS" rexists /etc/udev/rules.d/76-mm-ignore.rules
+		check "modem route metric $CONFIG_BACKUP_METRIC" has_line "METRIC=$CONFIG_BACKUP_METRIC" "$(rcat /etc/default/modem)" ;;
+esac
+if [[ -n ${CONFIG_USB_WAN:-} ]]; then
+	check "USB uplinks: DHCP, metric $CONFIG_BACKUP_METRIC" has_line "RouteMetric=$CONFIG_BACKUP_METRIC" "$(rcat $net/40-usb-wan.network)"
+fi
+if [[ -n $CONFIG_GPS_TIME ]]; then
+	check "gpsd on $CONFIG_GPS_DEVICE" has_line "DEVICES=\"$CONFIG_GPS_DEVICE\"" "$(rcat /etc/default/gpsd)"
+	check "chrony GPS offset $CONFIG_GPS_OFFSET" grep -q "^refclock SHM 0 .*offset $CONFIG_GPS_OFFSET\b" <<< "$(rcat /etc/chrony/conf.d/gpsd.conf)"
+fi
+
+echo "-- packages"
+pkgs=$(cut -d' ' -f1 "$gz.packages")
+want="ssh chrony iw xz-utils wireguard-tools exfatprogs locales systemd-resolved"
+[[ ${CONFIG_MODEM:-none} != mm ]] || want+=" modemmanager libqmi-utils libmbim-utils"
+[[ -z ${CONFIG_USB_WAN:-} ]] || want+=" usbmuxd"
+[[ ${CONFIG_WIFI:-} != ap ]] || want+=" hostapd"
+[[ -z ${CONFIG_KERNEL_APPARMOR:-} ]] || want+=" apparmor"
+[[ -z ${CONFIG_KERNEL_TRACING:-} ]] || want+=" bpftrace bpfcc-tools"
+want+=${PACKAGE_OPTIONS:+ $PACKAGE_OPTIONS}
+[[ -z $CONFIG_GPS_TIME ]] || want+=" gpsd"
+[[ -z $CONFIG_PKG_DEVTOOLS ]] || want+=" build-essential devscripts git-buildpackage"
+for p in $CONFIG_EXTRA_PACKAGES; do want+=" ${p%%[=/:]*}"; done
+missing=
+for p in $want; do has_line "$p" "$pkgs" || missing+=" $p"; done
+check "requested packages installed${missing:+ (missing:$missing)}" test -z "$missing"
+# Debian's base system has nftables anyway (priority important); without
+# the firewall it's just not enabled (checked above)
+if [[ -n $CONFIG_FIREWALL ]]; then check "nftables installed" has_line nftables "$pkgs"; fi
+if [[ $CONFIG_WIFI == ap ]]; then check "hostapd installed" has_line hostapd "$pkgs"
+else check "no hostapd (no AP)" not has_line hostapd "$pkgs"; fi
+check "no distribution kernel" test -z "$(grep '^linux-image-' <<< "$pkgs" || true)"
+
+echo
+if (( fails )); then
+	echo "$fails check(s) failed"
+	exit 1
+fi
+echo "all checks passed"

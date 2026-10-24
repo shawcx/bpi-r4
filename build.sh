@@ -117,12 +117,12 @@ if [[ $CONFIG_WIFI == ap ]]; then
 		exit 1
 	fi
 fi
-# root's SSH keys: scripts/mkimage needs them at the end, so check now
+# root's SSH keys, none when the file is missing: said now, as an image
+# without them takes root on the serial console only
 keys=$CONFIG_AUTHORIZED_KEYS
 [[ $keys == /* ]] || keys=$top/$keys
 if ! grep -qsE '^(ssh-|ecdsa-|sk-)' "$keys"; then
-	echo "no SSH public keys in $keys (root logs in with keys only; see the README's Quick start)" >&2
-	exit 1
+	echo "no SSH public keys in $keys: root logs in on the serial console only (SSH takes keys only; see the README's Quick start)" >&2
 fi
 # debootstrap checks the archive's signature with the host's keyring
 case "$distro" in

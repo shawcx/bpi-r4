@@ -243,7 +243,7 @@ fi
 check "resolv.conf is systemd-resolved's stub" test "$(rlink /etc/resolv.conf)" = ../run/systemd/resolve/stub-resolv.conf
 keys=$CONFIG_AUTHORIZED_KEYS
 [[ $keys == /* ]] || keys=$top/$keys
-check "root's SSH keys are $(basename "$keys")'s" test "$(rcat /root/.ssh/authorized_keys)" = "$(grep -E '^(ssh-|ecdsa-|sk-)' "$keys")"
+check "root's SSH keys are $(basename "$keys")'s" test "$(rcat /root/.ssh/authorized_keys)" = "$(grep -sE '^(ssh-|ecdsa-|sk-)' "$keys")"
 check "keys-only root SSH drop-in" rexists /etc/ssh/sshd_config.d/10-endpoint.conf
 check "root password set" grep -q '^root:\$' <<< "$(rcat /etc/shadow)"
 

@@ -621,8 +621,9 @@ config AUTHORIZED_KEYS
 	string "Root SSH authorized_keys file"
 	default "root_authorized_keys"
 	help
-	  Relative to the repo, or absolute. It needs at least one key:
-	  password login over SSH is disabled.
+	  Relative to the repo, or absolute. Password login over SSH is
+	  disabled, so without a key here (or without the file) root logs
+	  in on the serial console only.
 
 endmenu
 

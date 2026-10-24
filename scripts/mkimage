@@ -37,6 +37,7 @@
 # - locales (CONFIG_LOCALES), the first as LANG
 # - hostname, regulatory domain, root password (console only; ROOT_PASSWORD
 #   overrides the config's), root SSH with keys from the AUTHORIZED_KEYS file
+#   (none when it's missing)
 # - UTC, SSH host keys, machine-id and (with ssl-cert) the snakeoil TLS key
 #   made on first boot, root partition grown to fill the SD card/eMMC on
 #   first boot
@@ -53,11 +54,6 @@ if [[ -z ${CONFIG_BOARD:-} ]]; then
 fi
 keys=$CONFIG_AUTHORIZED_KEYS
 [[ $keys == /* ]] || keys=$top/$keys
-# without a key nobody could SSH in (password login is disabled)
-if ! grep -qE '^(ssh-|ecdsa-|sk-)' "$keys"; then
-	echo "no SSH public keys in $keys" >&2
-	exit 1
-fi
 img=$1
 report=${2:-}
 # the config's password unless ROOT_PASSWORD is set
@@ -382,9 +378,10 @@ fi
 sudo ln -sf /usr/share/zoneinfo/Etc/UTC "$mnt"/etc/localtime
 echo "root:$root_password" | sudo chroot "$mnt" chpasswd
 
-# root SSH: keys only (sshd_config.d/10-endpoint.conf)
+# root SSH: keys only (sshd_config.d/10-endpoint.conf); an empty
+# authorized_keys without the file
 sudo install -d -m 700 "$mnt"/root/.ssh
-grep -E '^(ssh-|ecdsa-|sk-)' "$keys" | sudo tee "$mnt"/root/.ssh/authorized_keys >/dev/null
+{ grep -sE '^(ssh-|ecdsa-|sk-)' "$keys" || true; } | sudo tee "$mnt"/root/.ssh/authorized_keys >/dev/null
 sudo chmod 600 "$mnt"/root/.ssh/authorized_keys
 
 # host keys from the build would be shared by every board flashed from this

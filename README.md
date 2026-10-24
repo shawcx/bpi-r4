@@ -35,8 +35,10 @@ natively: install `gcc` instead of those two. The build also needs:
   build makes two.
 
 `root_authorized_keys` (not in the repo) holds the SSH public keys allowed to
-log in to the images as root, one per line: SSH takes keys only, so it needs
-at least one. The AUTHORIZED_KEYS option points elsewhere.
+log in to the images as root, one per line. SSH takes keys only, so without
+the file (or a key in it) the image's authorized_keys is empty and root logs
+in on the serial console only; the build says so at the start. The
+AUTHORIZED_KEYS option points elsewhere.
 
 The first build of a distribution bootstraps its rootfs and caches it in
 `.cache/rootfs/`. Downloads are cached in `.cache/dl/`. Later builds reuse
@@ -113,7 +115,7 @@ Kconfig doesn't allow stops the build before it starts, for example
 | Hostname | endpoint | |
 | Locales | `en_US.UTF-8` | generated; the first is `LANG` |
 | Root password | scripts/mkimage's default | for the serial console only; SSH takes keys only |
-| authorized_keys file | `root_authorized_keys` | yours, not in the repo; must hold at least one key |
+| authorized_keys file | `root_authorized_keys` | yours, not in the repo; without it, no SSH: the serial console only |
 | **Time** | | |
 | GPS time | yes | gpsd, and a chrony refclock from it |
 | GPS receiver, offset | `/dev/ttyACM0`, 0.067 s | the offset suits a u-blox 7 on USB |

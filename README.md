@@ -118,7 +118,7 @@ Kconfig doesn't allow stops the build before it starts, for example
 | GPS time | yes | gpsd, and a chrony refclock from it |
 | GPS receiver, offset | `/dev/ttyACM0`, 0.067 s | the offset suits a u-blox 7 on USB |
 | **Packages** | | |
-| Package options | ethtool, iperf3, tcpdump, usbutils, pciutils, screen | 257 packages to choose from (see Packages) |
+| Package options | ethtool, iperf3, tcpdump, usbutils, pciutils, lm-sensors, screen | 257 packages to choose from (see Packages) |
 | Development tools | no | runs `install-devtools` in the image, about 590 MB |
 | Extra packages | none | anything else, space-separated |
 | Image name tag | empty | appended to the image name |
@@ -148,7 +148,7 @@ recommends, like *Extra packages*.
 | Monitoring | htop, btop, glances, atop, nmon, iotop-c, sysstat, lsof, strace, powertop, iftop, nload, bmon, nethogs, iptraf-ng, bwm-ng, ifstat, tcptrack, vnstat, darkstat, lnav |
 | Metrics and logging | prometheus-node-exporter, prometheus-blackbox-exporter, collectd, munin-node, monit, zabbix-agent, snmpd, rsyslog, systemd-journal-remote |
 | Benchmarks and testing | **iperf3**, iperf, stress-ng, memtester, fio, sysbench |
-| Hardware | **usbutils**, **pciutils**, lshw, inxi, i2c-tools, spi-tools, gpiod, lm-sensors, mmc-utils, mtd-utils, u-boot-tools, libubootenv-tool, picocom, minicom, ser2net, usb-modeswitch, rfkill, nut, apcupsd, rtl-sdr |
+| Hardware | **usbutils**, **pciutils**, lshw, inxi, i2c-tools, spi-tools, gpiod, **lm-sensors**, mmc-utils, mtd-utils, u-boot-tools, libubootenv-tool, picocom, minicom, ser2net, usb-modeswitch, rfkill, nut, apcupsd, rtl-sdr |
 | Storage and filesystems | nvme-cli, smartmontools, hdparm, parted, gdisk, dosfstools, mtools, f2fs-tools, squashfs-tools, btrfs-progs, cryptsetup, lvm2, mdadm, ntfs-3g, sshfs, autofs, testdisk, gddrescue, pv, bmap-tools, duf, systemd-zram-generator |
 | Wi-Fi | wpasupplicant, wavemon, aircrack-ng, hcxdumptool, hcxtools, horst, mdk4 |
 | DNS and DHCP | dnsmasq, unbound, bind9, nsd, pdns-recursor, stubby, dnscrypt-proxy, kea-dhcp4-server, radvd, ndppd, ddclient, avahi-daemon, avahi-utils, tftpd-hpa |
@@ -305,7 +305,9 @@ make kernel-install HOST=root@endpoint              # kernel onto a running boar
     - zram, for compressed swap;
     - KVM, with vhost-net and macvtap, for virtual machines (the CPUs start at
       EL2);
-    - the EIP-197 crypto driver.
+    - the EIP-197 crypto driver;
+    - schedutil (built in) as the default cpufreq governor: the defconfig's
+      `userspace` governor holds the CPUs at 1.5 GHz, never 1.8 GHz.
   - `kernel/r4-only.config` leaves out drivers for hardware the R4 family
     doesn't have: other MediaTek SoCs' clocks and pin controllers, EFI, the
     VT console, PS/2 and libata. This shrinks the kernel from 29.4 MB to

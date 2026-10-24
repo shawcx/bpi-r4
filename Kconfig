@@ -169,10 +169,11 @@ config KERNEL_FRAGMENTS
 	  relative to this repo. A value the kernel's Kconfig drops (an
 	  unmet dependency, a misspelt symbol) stops the build.
 	  kernel/features.config adds WireGuard, exFAT, BBR, USB modem,
-	  serial and storage drivers, PPS clients, zram, KVM and the EIP-197
-	  crypto driver; kernel/r4-only.config leaves out drivers for hardware the
-	  R4 family doesn't have (other MediaTek SoCs' clocks and pin
-	  controllers, EFI, VT, PS/2, libata).
+	  serial and storage drivers, PPS clients, zram, KVM, the EIP-197
+	  crypto driver and the schedutil cpufreq governor (the defconfig's
+	  userspace one holds the CPUs at 1.5 GHz); kernel/r4-only.config
+	  leaves out drivers for hardware the R4 family doesn't have (other
+	  MediaTek SoCs' clocks and pin controllers, EFI, VT, PS/2, libata).
 
 config KERNEL_LOCALVERSION
 	string "Version suffix"
@@ -932,6 +933,7 @@ config PKG_GPIOD
 
 config PKG_LM_SENSORS
 	bool "lm-sensors: sensors: temperatures, fan speeds"
+	default y
 
 config PKG_MMC_UTILS
 	bool "mmc-utils: eMMC boot partitions and registers (mmc)"

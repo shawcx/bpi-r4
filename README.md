@@ -15,8 +15,7 @@ now does the same job itself.
 ## Quick start
 
 ```sh
-sudo apt install python3-kconfiglib pigz debootstrap mtools git qemu-user-static \
-	gcc-aarch64-linux-gnu make bc bison flex libssl-dev libelf-dev u-boot-tools ccache
+make deps                  # the build host's packages (sudo apt install make first)
 cat ~/.ssh/id_ed25519.pub > root_authorized_keys   # root's SSH keys (see below)
 make r4pro-8x_defconfig    # or r4pro-4e, r4pro-8x-switch, r4
 make menuconfig            # optional: change anything
@@ -26,7 +25,8 @@ make                       # build; the image lands in out/
 The build host is Debian or Ubuntu on either x86_64 or arm64. On x86_64 the
 arm64 rootfs's package scripts run under qemu (`qemu-user-static`) and the
 kernel is cross-compiled (`gcc-aarch64-linux-gnu`). On arm64 both run
-natively: install `gcc` instead of those two. The build also needs:
+natively, and `make deps` installs `gcc` instead of those two. The build also
+needs:
 - **sudo**, for debootstrap, the root filesystem's loop mount and chroot. The
   build asks for the password once at the start and keeps sudo's timeout
   refreshed until it ends.
@@ -59,6 +59,7 @@ The options live in `Kconfig`, and each has a help text (`?` in menuconfig).
 
 | make target | does |
 |---|---|
+| `make deps` | installs the build host's packages with `sudo apt-get install`: the image's, the kernel's, and the optional ones for `kernel-menuconfig`, BPF tracing and `check-image` |
 | `make <name>_defconfig` | writes `.config` from `configs/<name>_defconfig` |
 | `make menuconfig` | edits `.config` |
 | `make savedefconfig` | writes a minimal `./defconfig` from `.config`, to copy into `configs/` |
@@ -363,7 +364,7 @@ make kernel-install HOST=root@bpi                   # kernel onto a running boar
   `sudo apt install gcc-aarch64-linux-gnu make bc bison flex libssl-dev libelf-dev u-boot-tools`.
   An arm64 host builds natively and needs `gcc` in place of the cross
   compiler. `ccache` speeds up rebuilds, and `libncurses-dev` is needed for
-  `make kernel-menuconfig`.
+  `make kernel-menuconfig`. `make deps` installs all of them.
 
 ## Output
 

@@ -1,4 +1,5 @@
 # Image configuration with kconfiglib (sudo apt install python3-kconfiglib):
+#   make deps               install the build host's packages (sudo apt-get)
 #   make <name>_defconfig   .config from configs/<name>_defconfig
 #   make menuconfig         edit .config
 #   make savedefconfig      minimal ./defconfig from .config (for configs/)
@@ -10,11 +11,25 @@
 PYTHON ?= python3
 KCONFIG := Kconfig
 export KCONFIG_CONFIG ?= .config
+# the build host's packages (Debian/Ubuntu): the image, the kernel (an arm64
+# host compiles it natively), kernel-menuconfig (libncurses-dev), BPF tracing
+# (dwarves) and check-image (e2fsprogs, nftables)
+DEPS := python3-kconfiglib pigz debootstrap mtools git debian-archive-keyring ubuntu-keyring \
+	make bc bison flex libssl-dev libelf-dev libncurses-dev u-boot-tools kmod ccache dwarves \
+	e2fsprogs nftables
+ifeq ($(shell uname -m),aarch64)
+DEPS += gcc
+else
+DEPS += gcc-aarch64-linux-gnu qemu-user-static
+endif
 
-.PHONY: image menuconfig olddefconfig savedefconfig help kernel kernel-menuconfig kernel-savedefconfig kernel-install
+.PHONY: image deps menuconfig olddefconfig savedefconfig help kernel kernel-menuconfig kernel-savedefconfig kernel-install
 
 image: olddefconfig
 	./build.sh --config $(KCONFIG_CONFIG) $(FLAGS)
+
+deps:
+	sudo apt-get install $(DEPS)
 
 menuconfig:
 	$(PYTHON) -m menuconfig $(KCONFIG)
@@ -46,5 +61,5 @@ $(KCONFIG_CONFIG):
 	@echo "no $@: run make <name>_defconfig or make menuconfig" >&2; exit 1
 
 help:
-	@sed -n 's/^# \{0,1\}//; 1,9p' Makefile
+	@sed -n 's/^# \{0,1\}//; 1,10p' Makefile
 	@echo "defconfigs:"; ls configs | sed -n 's/^/  /; s/_defconfig$$//p'

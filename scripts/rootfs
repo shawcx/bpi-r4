@@ -3,6 +3,8 @@
 # package set) and pack it as a tarball: the cached starting point of every
 # image of that release, rebuilt by build.sh --clean. Sources, packages and
 # settings are the image's business (scripts/mkimage). Builds in a tmpfs.
+# The packages are downloaded into .cache/apt/<distro>, scripts/mkimage's
+# apt cache, so a rebuild downloads just the ones that changed.
 # One stage, not --foreign: debootstrap's package lookups (perl over the
 # whole Packages file) then run on the host, and only dpkg and maintainer
 # scripts run in the chroot, which on x86_64 goes through the qemu binfmt;
@@ -13,6 +15,9 @@ set -euo pipefail
 distro=$1
 mirror=$2
 out=$3
+top=$(cd "$(dirname "$0")/.." && pwd)
+debs=$top/.cache/apt/$distro
+mkdir -p "$debs/partial"
 
 dir=$(mktemp -d)
 # debootstrap's working directory, where it leaves wget-log files
@@ -29,7 +34,7 @@ sudo mount -t tmpfs -o size=2G,mode=755 rootfs "$dir"
 echo "bootstrapping $distro arm64 from $mirror..."
 cd "$wdir"
 # a Release file it can't verify (no keyring) is an error, not a warning
-sudo debootstrap --arch=arm64 --force-check-gpg "$distro" "$dir" "$mirror"
+sudo debootstrap --arch=arm64 --force-check-gpg --cache-dir="$debs" "$distro" "$dir" "$mirror"
 
 # xattrs keep file capabilities (ping's cap_net_raw)
 sudo tar -C "$dir" --xattrs --xattrs-include='*' -I pigz -cf "$out.part" .

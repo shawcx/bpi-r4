@@ -12,7 +12,10 @@
 #   shallow clone from GitLab, which unlike kernel.org serves partial clones)
 # - wireless-regdb's regulatory.db and its signature
 # Release downloads are cached by release; firmware and regdb are refreshed
-# on every run. GITHUB_TOKEN, if set, lifts GitHub's 60 requests/hour limit.
+# on every run. GitHub's answers on the newest releases are reused for 15
+# minutes, keeping a batch of builds on the same releases and under GitHub's
+# limit of 60 requests an hour (GITHUB_TOKEN, if set, lifts it); a pinned
+# release's for good.
 # usage: scripts/fetch --cache DIR --variant bpi-r4pro --device sdmmc|emmc
 #                      --ram 4|8 --kernel 6.18|7.2 [--uboot-release TAG]
 #                      [--kernel-release TAG] [--no-kernel]
@@ -31,6 +34,7 @@ import urllib.request
 FIRMWARE_REPO = "https://gitlab.com/kernel-firmware/linux-firmware.git"
 FIRMWARE_DIRS = ["aeonsemi", "airoha", "inside-secure", "mediatek"]
 REGDB_URL = "https://git.kernel.org/pub/scm/linux/kernel/git/wens/wireless-regdb.git/plain/"
+API_TTL = 15 * 60
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--cache", required=True)
@@ -61,11 +65,29 @@ def get(url, headers=None):
             time.sleep(5)
 
 
-def github(path):
+def github(path, ttl=None, ok=lambda answer: True):
+    # the API's answer, cached: reused for ttl seconds (None: for good) if
+    # ok(answer), else asked again (an answer saved while CI was still
+    # uploading may lack a file)
+    cached = os.path.join(args.cache, "api", re.sub(r"[^A-Za-z0-9._-]", "_", path) + ".json")
+    try:
+        if ttl is None or time.time() - os.path.getmtime(cached) < ttl:
+            with open(cached, "rb") as f:
+                answer = json.load(f)
+            if ok(answer):
+                return answer
+    except (OSError, ValueError):
+        pass
     headers = {"Accept": "application/vnd.github+json"}
     if os.environ.get("GITHUB_TOKEN"):
         headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
-    return json.loads(get("https://api.github.com/repos/" + path, headers))
+    data = get("https://api.github.com/repos/" + path, headers)
+    answer = json.loads(data)
+    os.makedirs(os.path.dirname(cached), exist_ok=True)
+    with open(cached + ".part", "wb") as f:
+        f.write(data)
+    os.replace(cached + ".part", cached)
+    return answer
 
 
 def download(url, dest, refresh=False):
@@ -90,44 +112,54 @@ def asset(release, name, subdir):
 out = {}
 
 # u-boot: the newest release unless pinned
-tag = args.uboot_release
-uboot = github("frank-w/u-boot/releases/" + (f"tags/{tag}" if tag else "latest"))
 v, dev = args.variant, args.device
 mem = "_8GB" if args.ram == 8 else ""
-out["UBOOT_RELEASE"] = uboot["tag_name"]
-out["UBOOT_IMG"] = asset(uboot, f"{v}_{dev}.img.gz", "uboot")
-out["UBOOT_FIP"] = out["UBOOT_BL2"] = out["UBOOT_FIP_STOCK"] = out["UBOOT_BL2_STOCK"] = ""
+files = dict.fromkeys(["UBOOT_IMG", "UBOOT_FIP", "UBOOT_BL2", "UBOOT_FIP_STOCK", "UBOOT_BL2_STOCK",
+                       "EMMC_BL2"], "")
+files["UBOOT_IMG"] = f"{v}_{dev}.img.gz"
 if args.ram == 8:
-    out["UBOOT_FIP"] = asset(uboot, f"{v}_{dev}_8GB_fip.bin", "uboot")
+    files["UBOOT_FIP"] = f"{v}_{dev}_8GB_fip.bin"
     if dev == "sdmmc":
-        out["UBOOT_BL2"] = asset(uboot, f"{v}_sdmmc_8GB_bl2.img", "uboot")
-        out["UBOOT_BL2_STOCK"] = asset(uboot, f"{v}_sdmmc_bl2.img", "uboot")
+        files["UBOOT_BL2"] = f"{v}_sdmmc_8GB_bl2.img"
+        files["UBOOT_BL2_STOCK"] = f"{v}_sdmmc_bl2.img"
     else:
         # the eMMC image's bl2 partition is empty: check by its fip
-        out["UBOOT_FIP_STOCK"] = asset(uboot, f"{v}_emmc_fip.bin", "uboot")
-out["EMMC_BL2"] = asset(uboot, f"{v}_emmc{mem}_bl2.img", "uboot") if dev == "emmc" else ""
+        files["UBOOT_FIP_STOCK"] = f"{v}_emmc_fip.bin"
+if dev == "emmc":
+    files["EMMC_BL2"] = f"{v}_emmc{mem}_bl2.img"
+tag = args.uboot_release
+uboot = github("frank-w/u-boot/releases/" + (f"tags/{tag}" if tag else "latest"),
+               None if tag else API_TTL,
+               lambda r: {f for f in files.values() if f} <= {a["name"] for a in r["assets"]})
+out["UBOOT_RELEASE"] = uboot["tag_name"]
+for k, name in files.items():
+    out[k] = asset(uboot, name, "uboot") if name else ""
 
 if not args.no_kernel:
     # kernel: the branch's newest CI build unless pinned; one tarball for the
     # whole R4 family
     branch = re.compile(rf"CI-BUILD-{re.escape(args.kernel)}-main-")
     tag = args.kernel_release
+
+    def tars(release):
+        return [a["name"] for a in release["assets"] if re.fullmatch(r"bpi-r4_.+\.tar\.gz", a["name"])]
+
     if tag:
         if not branch.match(tag):
             sys.exit(f"kernel release {tag} isn't a {args.kernel} CI build")
-        kernel = github(f"frank-w/BPI-Router-Linux/releases/tags/{tag}")
+        kernel = github(f"frank-w/BPI-Router-Linux/releases/tags/{tag}", ok=lambda r: len(tars(r)) == 1)
     else:
-        releases = github("frank-w/BPI-Router-Linux/releases?per_page=100")
+        releases = github("frank-w/BPI-Router-Linux/releases?per_page=100", API_TTL)
         kernel = next((r for r in releases if branch.match(r["tag_name"])
                        and any(a["name"].startswith("bpi-r4_") for a in r["assets"])), None)
         if not kernel:
             sys.exit(f"no {args.kernel} CI build among the latest kernel releases")
-    tars = [a["name"] for a in kernel["assets"] if re.fullmatch(r"bpi-r4_.+\.tar\.gz", a["name"])]
-    if len(tars) != 1:
-        sys.exit(f"{kernel['tag_name']} has {len(tars)} bpi-r4_*.tar.gz, expected 1")
+    tar = tars(kernel)
+    if len(tar) != 1:
+        sys.exit(f"{kernel['tag_name']} has {len(tar)} bpi-r4_*.tar.gz, expected 1")
     out["KERNEL_RELEASE"] = kernel["tag_name"]
-    out["KERNEL_TAR"] = asset(kernel, tars[0], "kernel")
-    out["KERNEL_VERSION"] = re.fullmatch(r"bpi-r4_(.+)\.tar\.gz", tars[0])[1]
+    out["KERNEL_TAR"] = asset(kernel, tar[0], "kernel")
+    out["KERNEL_VERSION"] = re.fullmatch(r"bpi-r4_(.+)\.tar\.gz", tar[0])[1]
 
 # firmware: a sparse checkout of just the directories the image takes
 fw = os.path.join(args.cache, "linux-firmware")

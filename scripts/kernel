@@ -6,8 +6,10 @@
 # config's kernel source options (Kconfig, "Kernel build: built from
 # source"):
 # - KERNEL_GIT at KERNEL_REF (empty: <kernel branch>-main), shallow-fetched
-#   into .cache/kernel/src, with KERNEL_PATCHES/*.patch applied (git am, in
-#   name order); or KERNEL_TREE, a local checkout built as it is
+#   into .cache/kernel/git (just what changed since the last fetch) and
+#   checked out in .cache/kernel/src-<branch>, with KERNEL_PATCHES/*.patch
+#   applied (git am, in name order); or KERNEL_TREE, a local checkout built
+#   as it is
 # - KERNEL_DEFCONFIG (empty: the tree's mt7988a_bpi-r4_defconfig) with the
 #   KERNEL_FRAGMENTS and the kernel extras' fragments (KERNEL_EXTRA_FRAGMENTS:
 #   AppArmor, BPF tracing) merged on top; a fragment value Kconfig drops
@@ -97,28 +99,58 @@ if [[ -n $CONFIG_KERNEL_TREE ]]; then
 	[[ -e $src/Makefile && -e $src/bpi-r4.its ]] || { echo "$src isn't a frank-w kernel tree" >&2; exit 1; }
 	desc="tree $src ($(git -C "$src" describe --always --dirty 2>/dev/null || echo "not git"))"
 else
-	src=$cache/src
+	# one shallow repository for every branch and a work tree per branch:
+	# builds alternating between branches then leave each other's sources
+	# alone, which make would otherwise rebuild in full
+	repo=$cache/git
+	src=$cache/src-$CONFIG_KERNEL
 	ref=${CONFIG_KERNEL_REF:-$CONFIG_KERNEL-main}
-	[[ -d $src/.git ]] || git init -q "$src"
-	git -C "$src" remote remove origin 2>/dev/null || true
-	git -C "$src" remote add origin "$CONFIG_KERNEL_GIT"
+	# the single work tree of earlier builds
+	rm -rf "$cache/src"
+	[[ -d $repo ]] || git init -q --bare "$repo"
+	git -C "$repo" remote set-url origin "$CONFIG_KERNEL_GIT" 2>/dev/null ||
+		git -C "$repo" remote add origin "$CONFIG_KERNEL_GIT"
 	echo "fetching $ref from $CONFIG_KERNEL_GIT..."
-	# a failed git am of an earlier run
-	git -C "$src" am --abort 2>/dev/null || true
-	git -C "$src" fetch -q --depth 1 --no-tags origin "$ref"
-	git -C "$src" -c advice.detachedHead=false checkout -q -f --detach FETCH_HEAD
-	git -C "$src" clean -q -fdx
-	desc="$CONFIG_KERNEL_GIT $ref $(git -C "$src" rev-parse --short=12 HEAD)"
+	git -C "$repo" fetch -q --depth 1 --no-tags origin "$ref"
+	commit=$(git -C "$repo" rev-parse 'FETCH_HEAD^{commit}')
+	# a ref per fetched ref, kept: they tell the next fetch what's here, which
+	# then sends just what changed (without them a --depth fetch sends the
+	# whole tree again), and keep the objects from git gc
+	git -C "$repo" update-ref "refs/fetched/$ref" "$commit"
+	# none yet, or one git can't use (the repo moved: work trees record
+	# absolute paths). Without its .git, git -C would find this repo's
+	if [[ ! -e $src/.git ]] || ! git -C "$src" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+		rm -rf "$src"
+		git -C "$repo" worktree prune
+		git -C "$repo" worktree add -q --detach "$src" "$commit"
+	fi
+	desc="$CONFIG_KERNEL_GIT $ref ${commit:0:12}"
+	patches=()
 	if [[ -n $CONFIG_KERNEL_PATCHES ]]; then
 		pdir=$(repo_path "$CONFIG_KERNEL_PATCHES")
 		shopt -s nullglob
 		patches=("$pdir"/*.patch)
 		shopt -u nullglob
+	fi
+	(( ! ${#patches[@]} )) || desc+=" + ${#patches[@]} patches"
+	# the commit and patches the work tree holds, and its HEAD once patched:
+	# unchanged since the last build, it's left as it is, as checking it out
+	# and patching it again gives the patched files new times, and make
+	# rebuilds them
+	state=$commit
+	(( ! ${#patches[@]} )) || state+=$'\n'$(sha256sum "${patches[@]}")
+	if [[ $(cat "$src.state" 2>/dev/null || true) != "$state"$'\n'"$(git -C "$src" rev-parse HEAD)" ||
+		-n $(git -C "$src" status --porcelain) ]]; then
+		rm -f "$src.state"
+		# a failed git am of an earlier run
+		git -C "$src" am --abort 2>/dev/null || true
+		git -C "$src" -c advice.detachedHead=false checkout -q -f --detach "$commit"
+		git -C "$src" clean -q -fdx
 		if (( ${#patches[@]} )); then
 			echo "applying ${#patches[@]} patches from $pdir..."
 			git -C "$src" -c user.name=build -c user.email=build@localhost am -q --3way "${patches[@]}"
-			desc+=" + ${#patches[@]} patches"
 		fi
+		printf '%s\n%s\n' "$state" "$(git -C "$src" rev-parse HEAD)" > "$src.state"
 	fi
 fi
 

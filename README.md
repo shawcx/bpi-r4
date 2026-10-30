@@ -32,7 +32,8 @@ natively: install `gcc` instead of those two. The build also needs:
   refreshed until it ends.
 - **Network access**, to download packages, the kernel, u-boot and firmware.
   `GITHUB_TOKEN`, if set, lifts GitHub's limit of 60 API requests an hour; a
-  build makes two.
+  build makes at most two, and none when a build in the last 15 minutes
+  made them.
 
 `root_authorized_keys` (not in the repo) holds the SSH public keys allowed to
 log in to the images as root, one per line. SSH takes keys only, so without
@@ -40,9 +41,17 @@ the file (or a key in it) the image's authorized_keys is empty and root logs
 in on the serial console only; the build says so at the start. The
 AUTHORIZED_KEYS option points elsewhere.
 
-The first build of a distribution bootstraps its rootfs and caches it in
-`.cache/rootfs/`. Downloads are cached in `.cache/dl/`. Later builds reuse
-both.
+Later builds reuse what earlier ones left in `.cache/`:
+- `rootfs/`: each distribution's bootstrapped rootfs, made by its first
+  build, or again with `--clean`.
+- `apt/<distro>/`: the packages debootstrap and apt downloaded.
+- `dl/`:
+  - u-boot releases and kernel CI builds, by release;
+  - linux-firmware, updated on every build;
+  - GitHub's answers on the latest releases, reused for 15 minutes, so a
+    batch of builds gets the same releases. Pinned releases' answers are
+    kept.
+- `kernel/`: the kernel source and builds (see Custom kernels).
 
 ## Configuring
 
@@ -341,8 +350,12 @@ make kernel-install HOST=root@bpi                   # kernel onto a running boar
   `/boot`, or a FIT missing an overlay that `uEnv.txt`'s `addconf` names. It
   doesn't reboot. Give each build its own Version suffix, so a fallback
   kernel of the same release keeps its modules.
-- **Where it builds:** out of tree in `.cache/kernel/` and incrementally, so
-  rebuilds are quick, and quicker still with ccache.
+- **Where it builds:** out of tree in `.cache/kernel/build-<branch>` and
+  incrementally, so rebuilds are quick, and quicker still with ccache.
+- **Source:** one shallow repository, `.cache/kernel/git`, which a fetch
+  adds just the changes to, and a work tree per branch,
+  `.cache/kernel/src-<branch>`. Builds that alternate between branches don't
+  rebuild each other's sources.
 - **Output:** `.cache/kernel/out/bpi-r4_<version>.tar.gz`.
 - **Records:** the manifest records the repository, ref, commit, patches and
   fragments.
@@ -370,9 +383,9 @@ image are:
 | `_bl2.img` | eMMC only: the bl2 for the eMMC's boot0 partition |
 
 Unless they're pinned under Releases, the u-boot release and the kernel build
-are the latest ones. Firmware and packages are always current. A rebuild from
-the same config can therefore get newer versions; the manifest records which
-ones went in.
+are the latest ones, as GitHub listed them up to 15 minutes earlier. Firmware
+and packages are always current. A rebuild from the same config can therefore
+get newer versions; the manifest records which ones went in.
 
 ### Checking an image
 
@@ -450,6 +463,8 @@ ssh $B 'mmc bootpart enable 1 1 /dev/mmcblk0'                      # only if not
    overlays, and the package list.
 3. **`scripts/rootfs`** debootstraps the distribution into a tmpfs and packs
    it as `.cache/rootfs/<distro>_arm64.tar.gz`, unless that already exists.
+   The packages are kept in `.cache/apt/<distro>/` for mkimage and later
+   bootstraps.
 4. **`scripts/fetch`** downloads, into `.cache/dl/`:
    - the u-boot release's base image for the board and boot device (partition
      table, bl2, fip, and empty BPI-BOOT and BPI-ROOT filesystems);

@@ -27,7 +27,7 @@
 #               (for KERNEL_DEFCONFIG)
 #   check       just check the host's build prerequisites
 #   install     build, then install on a running board over SSH (HOST, e.g.
-#               root@endpoint): the modules, the FIT as bpi-r4-<version>.itb
+#               root@bpi): the modules, the FIT as bpi-r4-<version>.itb
 #               and fit=<it> in /boot/uEnv.txt, saved first as uEnv.txt.prev
 #               on the first install. The image's bpi-r4.itb stays as the
 #               fallback: in u-boot's boot menu, Enter kernel-name,
@@ -47,7 +47,7 @@ cmd=${1:-build}
 arg=${2:-}
 case "$cmd" in
 	build|menuconfig|check) ;;
-	install) [[ -n $arg ]] || { echo "install needs a host, e.g. root@endpoint" >&2; exit 1; } ;;
+	install) [[ -n $arg ]] || { echo "install needs a host, e.g. root@bpi" >&2; exit 1; } ;;
 	savedefconfig) [[ -n $arg ]] || { echo "savedefconfig needs an output file" >&2; exit 1; } ;;
 	*) sed -n 's/^# \{0,1\}//; /^usage:/,/^set -e/p' "$0" | sed '$d' >&2; exit 1 ;;
 esac

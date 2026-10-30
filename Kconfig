@@ -1,5 +1,5 @@
 # Image options for build.sh: make menuconfig / make <name>_defconfig,
-# see the Makefile. The defaults build today's "endpoint" image for the
+# see the Makefile. The defaults build today's image for the
 # BPI-R4 Pro 8X; configs/*_defconfig hold the other boards.
 
 mainmenu "BPI-R4 image configuration"
@@ -599,7 +599,7 @@ menu "Identity"
 
 config HOSTNAME
 	string "Hostname"
-	default "endpoint"
+	default "bpi"
 
 config ROOT_PASSWORD
 	string "Root password (console only)"

@@ -112,7 +112,7 @@ Kconfig doesn't allow stops the build before it starts, for example
 | Bands and channels | 5 GHz on 36, 6 GHz on 37, 2.4 GHz on 1 | channel 0: automatic |
 | Wi-Fi clients' network | the LAN | or (router) a subnet of their own, 192.168.20.1/24, optionally as a guest network |
 | **Identity** | | |
-| Hostname | endpoint | |
+| Hostname | bpi | |
 | Locales | `en_US.UTF-8` | generated; the first is `LANG` |
 | Root password | scripts/mkimage's default | for the serial console only; SSH takes keys only |
 | authorized_keys file | `root_authorized_keys` | yours, not in the repo; without it, no SSH: the serial console only |
@@ -291,7 +291,7 @@ make kernel-menuconfig FRAGMENT=kernel/my.config    # change options; writes the
 make menuconfig                                     # Kernel source > Config fragments: kernel/my.config
 make kernel                                         # just the kernel
 make                                                # kernel and image
-make kernel-install HOST=root@endpoint              # kernel onto a running board
+make kernel-install HOST=root@bpi                   # kernel onto a running board
 ```
 
 - **Config fragments:** a fragment value that the kernel's Kconfig drops,

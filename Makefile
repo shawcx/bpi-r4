@@ -6,7 +6,7 @@
 #   make kernel             build the kernel from source (Kernel build: source)
 #   make kernel-menuconfig [FRAGMENT=kernel/x.config]   change its config
 #   make kernel-savedefconfig OUT=kernel/x_defconfig    save it whole
-#   make kernel-install HOST=root@endpoint   build it, install on a board
+#   make kernel-install HOST=root@bpi   build it, install on a board
 PYTHON ?= python3
 KCONFIG := Kconfig
 export KCONFIG_CONFIG ?= .config

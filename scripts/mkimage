@@ -378,7 +378,7 @@ fi
 sudo ln -sf /usr/share/zoneinfo/Etc/UTC "$mnt"/etc/localtime
 echo "root:$root_password" | sudo chroot "$mnt" chpasswd
 
-# root SSH: keys only (sshd_config.d/10-endpoint.conf); an empty
+# root SSH: keys only (sshd_config.d/10-bpi.conf); an empty
 # authorized_keys without the file
 sudo install -d -m 700 "$mnt"/root/.ssh
 { grep -sE '^(ssh-|ecdsa-|sk-)' "$keys" || true; } | sudo tee "$mnt"/root/.ssh/authorized_keys >/dev/null

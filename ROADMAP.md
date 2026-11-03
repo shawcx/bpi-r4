@@ -173,9 +173,11 @@ everything: the FIT file, overlays, console and board flags.
   or a USB uplink (a tethering phone, an ECM modem) only when the WAN's route
   goes. A service should ping out through the WAN, raise its route metric
   above the backups' while that fails, and restore it once pings succeed.
-- **Cellular modem with a SIM:** test `modem-connect` and ModemManager's
-  connection dispatcher (addresses, backup route, DNS on `wwan0`) on the 8X's
-  RM520N. Without a SIM, only the waiting path has been tested.
+- **Cellular modem's IPv6 route:** on the 8X's RM520N (T-Mobile SIM),
+  `modem-connect` and the connection dispatcher work, but the kernel also
+  takes the network's router advertisement on `wwan0`, a default route with
+  metric 1024. That ties with the WAN's, so the modem isn't only a backup on
+  IPv6. The dispatcher could set `accept_ra_defrtr=0` on the interface.
 - **USB tethering on hardware:** an Android phone (RNDIS or NCM) and an iPhone
   (`ipheth` after *Trust this computer*): check the DHCP lease and that the
   backup route takes over when the WAN cable is pulled.

@@ -31,7 +31,9 @@ while :; do
 		say "connected" ;;
 	registered)
 		say "registered, connecting${APN:+ with APN $APN}"
-		mmcli -m "$m" --simple-connect="ip-type=ipv4v6${APN:+,apn=$APN}" >/dev/null ||
+		# ModemManager (1.24) refuses a 3GPP connect without the apn
+		# key; an empty one asks for the network's default
+		mmcli -m "$m" --simple-connect="ip-type=ipv4v6,apn=$APN" >/dev/null ||
 			say "connect failed, retrying" ;;
 	disabled)
 		say "enabling the modem"

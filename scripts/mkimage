@@ -120,9 +120,10 @@ read -r boot_start _ <<< "$p5"
 boot=$img@@$((boot_start * 512))
 tar -C "$kdir" -xzf "$KERNEL_TAR" BPI-BOOT
 mcopy -i "$boot" -m -o "$kdir"/BPI-BOOT/* ::/
-# the FIT's overlays differ between kernels: 6.18 has no ov-pro-cn14 (its DT
-# defaults CN14 to key-m) nor the 8X/4E port overlays (it muxes the 8X combo
-# ports itself); drop what it lacks rather than rely on u-boot skipping it
+# the FIT's overlays differ between kernels: 6.18 has no ov-pro-cn13 or cn14
+# (its DT defaults both M.2 lanes to key-m) nor the 8X/4E port overlays (it
+# muxes the 8X combo ports itself); drop what it lacks rather than rely on
+# u-boot skipping it
 addconf=
 for ov in $DT_OVERLAYS; do
 	if grep -qaF -- "$ov" "$kdir/BPI-BOOT/bpi-r4.itb"; then addconf+="#$ov"

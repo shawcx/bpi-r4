@@ -75,6 +75,57 @@ config RAM
 	default 4
 
 choice
+	prompt "M.2 lane 1L0: CN15 or CN13"
+	depends on BOARD_R4PRO_8X || BOARD_R4PRO_4E
+	default M2_LANE0_CN15
+	help
+	  The R4 Pro has two 1-lane PCIe 3.0 controllers for its M.2
+	  slots. A GPIO gives each one to a key-B slot (a modem) or a key-M
+	  slot (an NVMe drive), set by the ov-pro-cn* device tree overlays:
+	  1L0 serves CN15 or CN13, 1L1 CN18 or CN14. The default, CN15 and
+	  CN14, takes one drive (in CN14); a second drive in CN13 needs
+	  1L0 on CN13. The slot left out gets no PCIe. Key-B slots carry
+	  USB too, so a USB modem (the RM520N) works in any of them.
+	  Kernel 6.18 has only the key-B overlays and defaults both lanes
+	  to key-M; ov-pro-cn13 and ov-pro-cn14 are dropped there. Don't
+	  set the lanes in Extra device tree overlays: with both of a
+	  lane's overlays applied, key-B wins.
+
+config M2_LANE0_CN15
+	bool "Key-B CN15: a modem in PCIe mode"
+
+config M2_LANE0_CN13
+	bool "Key-M CN13: a second NVMe drive"
+
+endchoice
+
+config M2_LANE0
+	string
+	default "cn13" if M2_LANE0_CN13
+	default "cn15" if M2_LANE0_CN15
+
+choice
+	prompt "M.2 lane 1L1: CN14 or CN18"
+	depends on BOARD_R4PRO_8X || BOARD_R4PRO_4E
+	default M2_LANE1_CN14
+	help
+	  The second M.2 PCIe lane: key-M CN14 (an NVMe drive) or key-B
+	  CN18 (a modem in PCIe mode). See M.2 lane 1L0.
+
+config M2_LANE1_CN14
+	bool "Key-M CN14: an NVMe drive"
+
+config M2_LANE1_CN18
+	bool "Key-B CN18: a modem in PCIe mode"
+
+endchoice
+
+config M2_LANE1
+	string
+	default "cn14" if M2_LANE1_CN14
+	default "cn18" if M2_LANE1_CN18
+
+choice
 	prompt "Kernel"
 	default KERNEL_7_2 if BOARD_R4PRO_4E
 	default KERNEL_6_18
@@ -289,8 +340,9 @@ config DT_OVERLAYS
 	string "Extra device tree overlays"
 	help
 	  Space-separated FIT overlay names for u-boot's addconf, after the
-	  board's (the 8X/4E port overlays and the M.2 slots' ov-pro-cn14
-	  and ov-pro-cn15). Ones the kernel's FIT doesn't have are dropped.
+	  board's (the 8X/4E port overlays and the M.2 lanes' ov-pro-cn*,
+	  which have their own options). Ones the kernel's FIT doesn't have
+	  are dropped.
 
 endmenu
 

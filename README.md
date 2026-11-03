@@ -94,6 +94,8 @@ Kconfig doesn't allow stops the build before it starts, for example
 | Board | R4 Pro 8X | 8X, 4E, or R4 (2x SFP) |
 | Boot device | SD card | eMMC also writes `<image>_bl2.img` for the boot0 partition |
 | RAM | 8 GB on the 8X, else 4 GB | 8 GB writes u-boot's 8 GB bl2 and fip |
+| M.2 lane 1L0 | key-B CN15 | R4 Pro only. Or key-M CN13, for a second NVMe drive (see M.2 slots below) |
+| M.2 lane 1L1 | key-M CN14 | R4 Pro only. Or key-B CN18, for a modem in PCIe mode |
 | Kernel | 6.18, or 7.2 on the 4E | the branch; the 4E needs 7.2 |
 | Kernel build | built from source, with WireGuard and exFAT | or frank-w's CI build, which has neither (see Custom kernels) |
 | Distribution | Debian 13 trixie | Debian 12 bookworm, Ubuntu 24.04 noble, Ubuntu 26.04 resolute |
@@ -276,6 +278,22 @@ that needs a health check (see ROADMAP.md).
   - WAN is `wan`.
   - The LAN bridge uses `lan0`–`lan3`.
 
+**M.2 slots (R4 Pro)**
+- Two 1-lane PCIe 3.0 controllers serve the M.2 slots. A GPIO gives each one
+  to a key-B slot (a modem) or a key-M slot (an NVMe drive):
+  - lane 1L0 (`11280000.pcie`): key-B CN15 or key-M CN13;
+  - lane 1L1 (`11290000.pcie`): key-B CN18 or key-M CN14.
+- The default, CN15 and CN14, takes one NVMe drive, in CN14. For a second
+  drive in CN13, set lane 1L0 to CN13.
+- The slot left out gets no PCIe. Key-B slots carry USB too, so a USB modem
+  (the RM520N) works in any of them.
+- The lanes are set by the `ov-pro-cn*` overlays in `uEnv.txt`'s `addconf`.
+  Kernel 6.18 has only the key-B ones (cn15, cn18) and defaults both lanes to
+  key-M, so the build drops cn13 and cn14 there.
+- Set the lanes with these options, not with extra device tree overlays: with
+  both of a lane's overlays applied, key-B wins. On a running board, edit
+  `addconf` in `/boot/uEnv.txt` and reboot.
+
 ## Custom kernels
 
 By default the kernel is built from source rather than taken from frank-w's
@@ -397,8 +415,9 @@ scripts/check-image out/<image>.img.gz
 This checks a built image offline, without root, against the `.config`,
 manifest and package list next to it:
 - **u-boot:** the bl2 and fip against the release's files in `.cache/dl/`.
-- **BPI-BOOT:** `uEnv.txt`'s settings, and that each overlay it names is in the
-  kernel's FIT.
+- **BPI-BOOT:** `uEnv.txt`'s settings, that each overlay it names is in the
+  kernel's FIT, and on the R4 Pro that it has the chosen M.2 slots' overlays
+  and not the other slots'.
 - **BPI-ROOT:**
   - kernel modules, fstab, hostname and apt sources;
   - the network role's files and the firewall, loading the ruleset with the

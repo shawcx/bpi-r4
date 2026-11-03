@@ -4,7 +4,7 @@
 # - u-boot: the bl2 and fip partitions against the release's files in
 #   .cache/dl, where the build downloaded them
 # - BPI-BOOT (mtools): the kernel FIT, uEnv.txt's settings and its overlays
-#   (each must be in the FIT)
+#   (each must be in the FIT; the R4 Pro's chosen M.2 slots, not the others)
 # - the kernel's embedded config (IKCONFIG, from the FIT) against the
 #   KERNEL_FRAGMENTS of a source build
 # - BPI-ROOT (debugfs): kernel modules, fstab, hostname, the network role's
@@ -121,6 +121,19 @@ if [[ $CONFIG_KERNEL == 7.2 ]]; then
 		*) want= ;;
 	esac
 	for ov in $want; do check "port overlay $ov in addconf" grep -qw -- "$ov" <<< "$addconf"; done
+fi
+# the M.2 lanes: the chosen slot's overlay (6.18 has only the key-B ones and
+# defaults to key-M) and never the lane's other one, which wins if key-B
+if [[ $CONFIG_BOARD == r4pro* ]]; then
+	for lane in "$CONFIG_M2_LANE0 cn13 cn15" "$CONFIG_M2_LANE1 cn14 cn18"; do
+		read -r slot keym keyb <<< "$lane"
+		other=$keyb
+		[[ $slot == "$keyb" ]] && other=$keym
+		if [[ $CONFIG_KERNEL == 7.2 || $slot == "$keyb" ]]; then
+			check "M.2 overlay ov-pro-$slot in addconf" grep -qw -- "ov-pro-$slot" <<< "$addconf"
+		fi
+		check "no ov-pro-$other in addconf" not grep -qw -- "ov-pro-$other" <<< "$addconf"
+	done
 fi
 
 echo "-- kernel config"

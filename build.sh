@@ -147,7 +147,7 @@ case "$board" in
 		variant=bpi-r4pro
 		image_prefix=bpi-r4pro
 		uenv="isr4pro=1"
-		dt_overlays="ov-pro-cn14 ov-pro-cn15 ov-pro-8x-lan-$ports ov-pro-8x-wan-$ports"
+		dt_overlays="ov-pro-$CONFIG_M2_LANE0 ov-pro-$CONFIG_M2_LANE1 ov-pro-8x-lan-$ports ov-pro-8x-wan-$ports"
 		overlays+=" r4pro" ;;
 	# the 4E shares the R4 Pro u-boot and image; isr4pro4e=1 selects its FIT
 	# config (conf-base-r4pro-4e), which u-boot knows from the 2026.07 CI
@@ -161,7 +161,7 @@ case "$board" in
 		uenv="isr4pro=1
 isr4pro4e=1
 console=console=ttyS0,115200n1 earlycon=uart8250,mmio32,0x11000000"
-		dt_overlays="ov-pro-cn14 ov-pro-cn15 ov-pro-4e-wan-$ports"
+		dt_overlays="ov-pro-$CONFIG_M2_LANE0 ov-pro-$CONFIG_M2_LANE1 ov-pro-4e-wan-$ports"
 		overlays+=" r4pro r4pro4e" ;;
 	r4)
 		variant=bpi-r4
@@ -256,6 +256,7 @@ fi
 	echo "firmware:   linux-firmware $FIRMWARE_COMMIT"
 	echo "ram:        ${ram}GB$( [[ $ram == 8 ]] && echo " (8GB bl2/fip)")"
 	[[ $board == r4pro* ]] && echo "ports:      $ports"
+	[[ $board == r4pro* ]] && echo "m.2:        1L0 $CONFIG_M2_LANE0, 1L1 $CONFIG_M2_LANE1"
 	sed -n 's/^\([^#]\)/uEnv:       \1/p' "$work/uEnv.txt"
 	echo "hostname:   $CONFIG_HOSTNAME"
 	echo "role:       $CONFIG_ROLE$( [[ $CONFIG_ROLE == router ]] && echo " ${CONFIG_LAN_ADDRESS}${CONFIG_DHCP_SERVER:+ dhcp-server}${CONFIG_FIREWALL:+ firewall}${CONFIG_SSH_FROM_WAN:+ ssh-from-wan}")"

@@ -96,7 +96,7 @@ Kconfig doesn't allow stops the build before it starts, for example
 | RAM | 8 GB on the 8X, else 4 GB | 8 GB writes u-boot's 8 GB bl2 and fip |
 | M.2 lane 1L0 | key-B CN15 | R4 Pro only. Or key-M CN13, for a second NVMe drive (see M.2 slots below) |
 | M.2 lane 1L1 | key-M CN14 | R4 Pro only. Or key-B CN18, for a modem in PCIe mode |
-| Kernel | 6.18, or 7.2 on the 4E | the branch: 6.18 (LTS), 7.2 or 7.3 (newest, booted on the 8X only); the 4E needs 7.2 or newer |
+| Kernel | 6.18, or 7.2 on the 4E | the branch: 6.18 (LTS), 7.2 or 7.3 (newest, booted on the 8X and 4E, untested on the R4); the 4E needs 7.2 or newer |
 | Kernel build | built from source, with WireGuard and exFAT | or frank-w's CI build, which has neither (see Custom kernels) |
 | Distribution | Debian 13 trixie | Debian 12 bookworm, Ubuntu 24.04 noble, Ubuntu 26.04 resolute |
 | Debian mirror, Ubuntu mirror | deb.debian.org, ports.ubuntu.com | the one for the distribution is used; e.g. an apt-cacher-ng proxy |

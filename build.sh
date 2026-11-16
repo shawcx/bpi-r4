@@ -2,7 +2,7 @@
 # Build an SD-card or eMMC image for the BPI-R4 Pro 8X/4E or BPI-R4, configured with Kconfig (make menuconfig).
 # Runs on x86_64 (arm64 rootfs via qemu binfmt) or natively on arm64.
 # usage: ./build.sh [--config FILE] [--board r4pro|r4pro4e|r4] [--device sdmmc|emmc]
-#                   [--kernel 6.18|7.2] [--ram 8|4] [--ports sfp|phy] [--clean] [distro]
+#                   [--kernel 6.18|7.2|7.3] [--ram 8|4] [--ports sfp|phy] [--clean] [distro]
 #   The options come from a Kconfig config (make menuconfig, see the Makefile
 #   and Kconfig's help texts): --config FILE, else configs/<board>_defconfig
 #   for --board (r4pro-8x, r4pro-4e, r4), else .config, else
@@ -11,7 +11,7 @@
 #   --board   r4pro: BPI-R4 Pro 8X; r4pro4e: BPI-R4 Pro 4E; r4: BPI-R4 (standard, 2x SFP)
 #   --device  sdmmc or emmc; emmc also writes <image>_bl2.img, the bl2 for the
 #             eMMC boot0 partition (the image's bl2 partition is empty)
-#   --kernel  frank-w kernel branch: 6.18 (LTS) or 7.2 (newest)
+#   --kernel  frank-w kernel branch: 6.18 (LTS), 7.2 or 7.3 (newest)
 #   --ram     board RAM in GB; 8 writes u-boot's 8GB bl2 and fip
 #   --ports   R4 Pro combo/WAN ports: sfp or phy (RJ45)
 #   --clean   rebuild the cached rootfs (.cache/rootfs/<distro>_arm64.tar.gz)

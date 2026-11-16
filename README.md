@@ -96,12 +96,12 @@ Kconfig doesn't allow stops the build before it starts, for example
 | RAM | 8 GB on the 8X, else 4 GB | 8 GB writes u-boot's 8 GB bl2 and fip |
 | M.2 lane 1L0 | key-B CN15 | R4 Pro only. Or key-M CN13, for a second NVMe drive (see M.2 slots below) |
 | M.2 lane 1L1 | key-M CN14 | R4 Pro only. Or key-B CN18, for a modem in PCIe mode |
-| Kernel | 6.18, or 7.2 on the 4E | the branch; the 4E needs 7.2 |
+| Kernel | 6.18, or 7.2 on the 4E | the branch: 6.18 (LTS), 7.2 or 7.3 (newest, booted on the 8X only); the 4E needs 7.2 or newer |
 | Kernel build | built from source, with WireGuard and exFAT | or frank-w's CI build, which has neither (see Custom kernels) |
 | Distribution | Debian 13 trixie | Debian 12 bookworm, Ubuntu 24.04 noble, Ubuntu 26.04 resolute |
 | Debian mirror, Ubuntu mirror | deb.debian.org, ports.ubuntu.com | the one for the distribution is used; e.g. an apt-cacher-ng proxy |
 | **Releases** | | |
-| u-boot release | latest, or 2026.07 on the 4E | a frank-w/u-boot release tag |
+| u-boot release | the 2026.07 CI build of 2026-08-12 | a frank-w/u-boot release tag, 2026.07 or newer. The 2026.10 build of 2026-11-14 doesn't boot |
 | Kernel release | the branch's latest CI build | a BPI-Router-Linux release tag of that branch |
 | Extra device tree overlays | none | added to the board's ones in uEnv.txt's `addconf` |
 | **Network** | | |
@@ -269,7 +269,7 @@ that needs a health check (see ROADMAP.md).
 **Ports**
 - **8X:**
   - WAN: the 10G combo.
-  - On kernel 7.2: `lan1`–`lan4` and `lan6` (the 10G combo) are on the MxL862xx switch, and `lan5` is on the MT7988 switch.
+  - On kernel 7.2 and 7.3: `lan1`–`lan4` and `lan6` (the 10G combo) are on the MxL862xx switch, and `lan5` is on the MT7988 switch.
   - Kernel 6.18 names the MxL ports `lan0`–`lan4`.
 - **4E:**
   - WAN: the 2.5G RJ45, or SFP2 with `--ports sfp`.
@@ -401,8 +401,9 @@ image are:
 | `.md5` | checksum of the image |
 | `_bl2.img` | eMMC only: the bl2 for the eMMC's boot0 partition |
 
-Unless they're pinned under Releases, the u-boot release and the kernel build
-are the latest ones, as GitHub listed them up to 15 minutes earlier. Firmware
+The u-boot release is a fixed one unless another is set under Releases.
+Unless it's pinned there, the kernel build is the latest one, as GitHub
+listed it up to 15 minutes earlier. Firmware
 and packages are always current. A rebuild from the same config can therefore
 get newer versions; the manifest records which ones went in.
 

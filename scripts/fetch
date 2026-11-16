@@ -17,7 +17,7 @@
 # limit of 60 requests an hour (GITHUB_TOKEN, if set, lifts it); a pinned
 # release's for good.
 # usage: scripts/fetch --cache DIR --variant bpi-r4pro --device sdmmc|emmc
-#                      --ram 4|8 --kernel 6.18|7.2 [--uboot-release TAG]
+#                      --ram 4|8 --kernel 6.18|7.2|7.3 [--uboot-release TAG]
 #                      [--kernel-release TAG] [--no-kernel]
 #   --no-kernel  skip the kernel (built from source by scripts/kernel)
 import argparse

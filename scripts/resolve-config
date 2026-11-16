@@ -25,7 +25,7 @@ board_defconfig = {"r4pro": "r4pro-8x", "r4pro4e": "r4pro-4e", "r4": "r4"}
 choices = {
     "board": {"r4pro": "BOARD_R4PRO_8X", "r4pro4e": "BOARD_R4PRO_4E", "r4": "BOARD_R4"},
     "device": {"sdmmc": "DEVICE_SDMMC", "emmc": "DEVICE_EMMC"},
-    "kernel": {"6.18": "KERNEL_6_18", "7.2": "KERNEL_7_2"},
+    "kernel": {"6.18": "KERNEL_6_18", "7.2": "KERNEL_7_2", "7.3": "KERNEL_7_3"},
     "ram": {"4": "RAM_4G", "8": "RAM_8G"},
     "ports": {"sfp": "PORTS_SFP", "phy": "PORTS_PHY"},
     "distro": {"trixie": "DISTRO_TRIXIE", "bookworm": "DISTRO_BOOKWORM", "noble": "DISTRO_NOBLE",
@@ -114,6 +114,10 @@ for name, fmt in formats.items():
     sym = kconf.syms[name]
     if sym.config_string and not re.fullmatch(fmt, sym.str_value):
         errors.append(f"invalid {name} '{sym.str_value}'")
+# uEnv.txt's console= line (build.sh) is written for u-boot 2026.07's env
+m = re.search(r"bpi-(\d{4}\.\d{2})", kconf.syms["UBOOT_RELEASE"].str_value)
+if m and m.group(1) < "2026.07":
+    errors.append(f"UBOOT_RELEASE is u-boot {m.group(1)}: 2026.07 or newer is needed")
 lan = kconf.syms["LAN_ADDRESS"]
 if lan.config_string:
     # a host address; at most /24 for the DHCP server's pool (.101-.250)

@@ -17,9 +17,8 @@ config BOARD_R4PRO_8X
 config BOARD_R4PRO_4E
 	bool "BPI-R4 Pro 4E"
 	help
-	  BPI-R4 Pro 4E: shares the R4 Pro u-boot and image; its u-boot
-	  release defaults to the 2026.07 CI build, the first that knows
-	  isr4pro4e=1 (its FIT config). Needs kernel 7.2.
+	  BPI-R4 Pro 4E: shares the R4 Pro u-boot and image; isr4pro4e=1
+	  in uEnv.txt selects its FIT config. Needs kernel 7.2 or newer.
 
 config BOARD_R4
 	bool "BPI-R4 (2x SFP)"
@@ -142,13 +141,20 @@ config KERNEL_6_18
 config KERNEL_7_2
 	bool "7.2"
 	help
-	  Newest branch: adds the 8X LAN/WAN and 4E WAN PHY/SFP overlays and
-	  per-slot M.2 overlays. Names the gmacs eth0-2 (WAN on eth1).
+	  Adds the 8X LAN/WAN and 4E WAN PHY/SFP overlays and per-slot M.2
+	  overlays. Names the gmacs eth0-2 (WAN on eth1).
+
+config KERNEL_7_3
+	bool "7.3"
+	help
+	  Newest branch, with 7.2's overlays and names. Booted on the 8X
+	  only so far.
 
 endchoice
 
 config KERNEL
 	string
+	default "7.3" if KERNEL_7_3
 	default "7.2" if KERNEL_7_2
 	default "6.18"
 
@@ -324,9 +330,11 @@ config UBOOT_RELEASE
 	string "u-boot release"
 	help
 	  A frank-w/u-boot release tag for the base image, bl2 and fip.
-	  Empty takes the board's default: the latest release, except on
-	  the 4E, which needs 2026.07 or newer and gets the 2026.07 CI build
-	  (build.sh).
+	  Empty takes the 2026.07 CI build of 2026-08-12 (build.sh): the
+	  2026.10 build of 2026-11-14 doesn't boot (no serial clock, a
+	  reset loop) until it has upstream's clock fix.
+	  Needs 2026.07 or newer: uEnv.txt's console line is written for
+	  its env, and the 4E's FIT config is known from then on.
 
 config KERNEL_RELEASE
 	string "Kernel release"
@@ -355,7 +363,7 @@ choice
 	default PORTS_SFP
 	help
 	  8X: the 10G LAN (lan6) and WAN combo ports. 4E: the WAN, on SFP2
-	  or the 2.5G RJ45. Selected by device tree overlay on 7.2; 6.18 has
+	  or the 2.5G RJ45. Selected by device tree overlay from 7.2; 6.18 has
 	  no 4E overlays and switches the 8X ports on SFP module presence.
 
 config PORTS_SFP

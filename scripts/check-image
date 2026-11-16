@@ -106,15 +106,14 @@ check "uEnv.txt" test -s "$work/uEnv.txt"
 uenv=$(cat "$work/uEnv.txt" 2>/dev/null || true)
 sed 's/^/        /' <<< "$uenv"
 if [[ $CONFIG_BOARD == r4pro* ]]; then check "isr4pro=1" has_line isr4pro=1 "$uenv"; fi
-if [[ $CONFIG_BOARD == r4pro4e ]]; then
-	check "isr4pro4e=1" has_line isr4pro4e=1 "$uenv"
-	check "console at 115200" grep -q '^console=console=ttyS0,115200' <<< "$uenv"
-fi
+if [[ $CONFIG_BOARD == r4pro4e ]]; then check "isr4pro4e=1" has_line isr4pro4e=1 "$uenv"; fi
+check "console at 115200" grep -q '^console=console=ttyS0,115200' <<< "$uenv"
 addconf=$(sed -n 's/^addconf=//p' <<< "$uenv" | tr '#' ' ')
 for ov in $addconf; do
 	check "overlay $ov in the FIT" grep -qaF -- "$ov" "$work/bpi-r4.itb"
 done
-if [[ $CONFIG_KERNEL == 7.2 ]]; then
+# the port overlays, from 7.2
+if [[ $CONFIG_KERNEL != 6.18 ]]; then
 	case "$CONFIG_BOARD" in
 		r4pro) want="ov-pro-8x-lan-$CONFIG_PORTS ov-pro-8x-wan-$CONFIG_PORTS" ;;
 		r4pro4e) want="ov-pro-4e-wan-$CONFIG_PORTS" ;;
@@ -129,7 +128,7 @@ if [[ $CONFIG_BOARD == r4pro* ]]; then
 		read -r slot keym keyb <<< "$lane"
 		other=$keyb
 		[[ $slot == "$keyb" ]] && other=$keym
-		if [[ $CONFIG_KERNEL == 7.2 || $slot == "$keyb" ]]; then
+		if [[ $CONFIG_KERNEL != 6.18 || $slot == "$keyb" ]]; then
 			check "M.2 overlay ov-pro-$slot in addconf" grep -qw -- "ov-pro-$slot" <<< "$addconf"
 		fi
 		check "no ov-pro-$other in addconf" not grep -qw -- "ov-pro-$other" <<< "$addconf"

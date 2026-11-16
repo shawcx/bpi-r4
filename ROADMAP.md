@@ -150,8 +150,7 @@ environment, or different built-in defaults. In order of need:
      a board.
    - **Risk:** a bad bl2 shows nothing, so it needs a working serial console.
      The boot switch always allows recovery from SD.
-   - **Gain:** patches, and newer code than his releases: his latest release,
-     2026.04, is older than the 2026.07 CI build the 4E already needs.
+   - **Gain:** patches, and newer code than his releases.
 
 Until one of these is needed, prebuilt releases plus `uEnv.txt` cover
 everything: the FIT file, overlays, console and board flags.

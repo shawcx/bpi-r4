@@ -101,7 +101,7 @@ Kconfig doesn't allow stops the build before it starts, for example
 | Distribution | Debian 13 trixie | Debian 12 bookworm, Ubuntu 24.04 noble, Ubuntu 26.04 resolute |
 | Debian mirror, Ubuntu mirror | deb.debian.org, ports.ubuntu.com | the one for the distribution is used; e.g. an apt-cacher-ng proxy |
 | **Releases** | | |
-| u-boot release | latest, or 2026.07 on the 4E | a frank-w/u-boot release tag |
+| u-boot release | latest | a frank-w/u-boot release tag, 2026.07 or newer |
 | Kernel release | the branch's latest CI build | a BPI-Router-Linux release tag of that branch |
 | Extra device tree overlays | none | added to the board's ones in uEnv.txt's `addconf` |
 | **Network** | | |

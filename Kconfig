@@ -17,9 +17,8 @@ config BOARD_R4PRO_8X
 config BOARD_R4PRO_4E
 	bool "BPI-R4 Pro 4E"
 	help
-	  BPI-R4 Pro 4E: shares the R4 Pro u-boot and image; its u-boot
-	  release defaults to the 2026.07 CI build, the first that knows
-	  isr4pro4e=1 (its FIT config). Needs kernel 7.2.
+	  BPI-R4 Pro 4E: shares the R4 Pro u-boot and image; isr4pro4e=1
+	  in uEnv.txt selects its FIT config. Needs kernel 7.2.
 
 config BOARD_R4
 	bool "BPI-R4 (2x SFP)"
@@ -324,9 +323,9 @@ config UBOOT_RELEASE
 	string "u-boot release"
 	help
 	  A frank-w/u-boot release tag for the base image, bl2 and fip.
-	  Empty takes the board's default: the latest release, except on
-	  the 4E, which needs 2026.07 or newer and gets the 2026.07 CI build
-	  (build.sh).
+	  Empty takes the latest release. Needs 2026.07 or newer: uEnv.txt's
+	  console line is written for its env, and the 4E's FIT config is
+	  known from then on.
 
 config KERNEL_RELEASE
 	string "Kernel release"

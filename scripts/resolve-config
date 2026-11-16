@@ -114,6 +114,10 @@ for name, fmt in formats.items():
     sym = kconf.syms[name]
     if sym.config_string and not re.fullmatch(fmt, sym.str_value):
         errors.append(f"invalid {name} '{sym.str_value}'")
+# uEnv.txt's console= line (build.sh) is written for u-boot 2026.07's env
+m = re.search(r"bpi-(\d{4}\.\d{2})", kconf.syms["UBOOT_RELEASE"].str_value)
+if m and m.group(1) < "2026.07":
+    errors.append(f"UBOOT_RELEASE is u-boot {m.group(1)}: 2026.07 or newer is needed")
 lan = kconf.syms["LAN_ADDRESS"]
 if lan.config_string:
     # a host address; at most /24 for the DHCP server's pool (.101-.250)

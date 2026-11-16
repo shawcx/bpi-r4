@@ -106,10 +106,8 @@ check "uEnv.txt" test -s "$work/uEnv.txt"
 uenv=$(cat "$work/uEnv.txt" 2>/dev/null || true)
 sed 's/^/        /' <<< "$uenv"
 if [[ $CONFIG_BOARD == r4pro* ]]; then check "isr4pro=1" has_line isr4pro=1 "$uenv"; fi
-if [[ $CONFIG_BOARD == r4pro4e ]]; then
-	check "isr4pro4e=1" has_line isr4pro4e=1 "$uenv"
-	check "console at 115200" grep -q '^console=console=ttyS0,115200' <<< "$uenv"
-fi
+if [[ $CONFIG_BOARD == r4pro4e ]]; then check "isr4pro4e=1" has_line isr4pro4e=1 "$uenv"; fi
+check "console at 115200" grep -q '^console=console=ttyS0,115200' <<< "$uenv"
 addconf=$(sed -n 's/^addconf=//p' <<< "$uenv" | tr '#' ' ')
 for ov in $addconf; do
 	check "overlay $ov in the FIT" grep -qaF -- "$ov" "$work/bpi-r4.itb"

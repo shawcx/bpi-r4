@@ -140,7 +140,6 @@ fi
 # WAN's networkd [Match]: the R4 Pro's gmac1 by DT node (its name differs
 # between kernels and --ports), the R4's DSA port by name
 overlays=common
-uboot_release=
 wan_match="Property=OF_FULLNAME=/soc/ethernet@15100000/mac@1"
 case "$board" in
 	r4pro)
@@ -150,17 +149,12 @@ case "$board" in
 		dt_overlays="ov-pro-$CONFIG_M2_LANE0 ov-pro-$CONFIG_M2_LANE1 ov-pro-8x-lan-$ports ov-pro-8x-wan-$ports"
 		overlays+=" r4pro" ;;
 	# the 4E shares the R4 Pro u-boot and image; isr4pro4e=1 selects its FIT
-	# config (conf-base-r4pro-4e), which u-boot knows from the 2026.07 CI
-	# build (the latest release is older). 2026.07's default env drops
-	# console=ttyS0,115200n1 from $console, leaving the kernel on the DT's
-	# stdout-path at 9600 baud
+	# config (conf-base-r4pro-4e), which u-boot knows from 2026.07
 	r4pro4e)
 		variant=bpi-r4pro
-		uboot_release=CI-BUILD-2026-07-bpi-2026.07-2026-08-12_1320
 		image_prefix=bpi-r4pro-4e
 		uenv="isr4pro=1
-isr4pro4e=1
-console=console=ttyS0,115200n1 earlycon=uart8250,mmio32,0x11000000"
+isr4pro4e=1"
 		dt_overlays="ov-pro-$CONFIG_M2_LANE0 ov-pro-$CONFIG_M2_LANE1 ov-pro-4e-wan-$ports"
 		overlays+=" r4pro r4pro4e" ;;
 	r4)
@@ -170,8 +164,13 @@ console=console=ttyS0,115200n1 earlycon=uart8250,mmio32,0x11000000"
 		dt_overlays=
 		wan_match="Name=wan" ;;
 esac
+# u-boot's default env from 2026.07 drops console=ttyS0,115200n1 from
+# $console, leaving the kernel on the DT's stdout-path at 9600 baud. $console
+# now holds whole arguments, so this line needs 2026.07 or newer
+# (resolve-config refuses an older UBOOT_RELEASE)
+uenv+=${uenv:+$'\n'}"console=console=ttyS0,115200n1 earlycon=uart8250,mmio32,0x11000000"
 dt_overlays+=${CONFIG_DT_OVERLAYS:+ $CONFIG_DT_OVERLAYS}
-uboot_release=${CONFIG_UBOOT_RELEASE:-$uboot_release}
+uboot_release=$CONFIG_UBOOT_RELEASE
 [[ -z $CONFIG_GPS_TIME ]] || overlays+=" gps"
 [[ $CONFIG_ROLE != router ]] || overlays+=" router"
 [[ -z $CONFIG_FIREWALL ]] || overlays+=" firewall"

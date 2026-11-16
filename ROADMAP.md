@@ -64,9 +64,12 @@ capability (`drivers/net/dsa/mxl862xx/mxl862xx-phylink.c`):
 
 ### Plan
 
-1. A: write the port-13 patch, build it, and test it on the 4E's `sfp-lan`
-   with the UF-RJ45-10G (or on the 8X's `lan6` with a 10G copper link). If it
-   works, send it upstream.
+1. A: done for kernel 7.3, in `kernel/patches-mxl862xx-sfp`. On the 4E with a
+   3 m passive DAC, `sfp-lan` links at 10G and passes traffic. Still to do:
+   - test the UF-RJ45-10G, an optical module and a 1G or 2.5G module;
+   - test the 8X's `lan6` with `--ports sfp`;
+   - check that unplugging a module brings the link down;
+   - send it to frank-w.
 2. If A fails: D, starting with the schematics, with B as a diagnostic.
 3. Not C.
 

@@ -1,0 +1,48 @@
+From b2ee47b7f7efca3225974192284c1b418b201f31 Mon Sep 17 00:00:00 2001
+From: Matthew Shaw <mshaw.cx@gmail.com>
+Date: Mon, 16 Nov 2026 01:05:13 -0500
+Subject: [PATCH] net: dsa: mxl862xx: use the legacy PCS for SFP port 13 on old
+ firmware
+
+On firmware older than 1.0.84, mxl862xx_phylink_mac_select_pcs() returns
+no PCS for any SerDes port, to leave the CPU port's SerDes in the mode
+set in the switch's flash. Port 13 is caught by that too. On the BPI-R4
+Pro it is the SFP cage (sfp-lan on the 4E, lan6 in SFP mode on the 8X),
+and with no PCS phylink never sets its mode for the module or reads its
+link state, so it stays down. The boards ship with firmware 1.0.70.
+
+mxl862xx_setup_pcs() already gives every SerDes port the legacy PCS on
+old firmware. It sets the mode with SYS_MISC_SFP_SET and reads link,
+speed and duplex from the port. Return it for port 13 when that is a
+user port, and keep no PCS for the others.
+
+Tested on a BPI-R4 Pro 4E with firmware 1.0.70 and a 3 m passive DAC
+(SFP-H10GB-CU3M): sfp-lan switches to 10gbase-r, links at 10Gbps/Full and
+passes traffic, and the CPU port and lan1-4 come up as before. Other
+modules and modes are untested.
+---
+ drivers/net/dsa/mxl862xx/mxl862xx-phylink.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c b/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
+index 5cfc0a5..50dec75 100644
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
+@@ -564,6 +564,14 @@ mxl862xx_phylink_mac_select_pcs(struct phylink_config *config,
+ 		if (READ_ONCE(priv->rescue_mode))
+ 			return NULL;
+ 		if (!MXL862XX_FW_VER_MIN(priv, 1, 0, 84)) {
++			/* Old firmware lacks the XPCS API, but the legacy PCS
++			 * can still set an SFP port's SerDes mode through
++			 * SYS_MISC_SFP_SET and read its link state. Without
++			 * a PCS the port never links. The CPU port's SerDes
++			 * stays in its flash-configured mode.
++			 */
++			if (port == 13 && dsa_port_is_user(dp))
++				return &priv->serdes_ports[port - 9].pcs;
+ 			dev_warn_once(dp->ds->dev,
+ 				      "SerDes PCS unsupported on old firmware.\n");
+ 			return NULL;
+-- 
+2.47.3
+

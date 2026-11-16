@@ -148,7 +148,7 @@ config KERNEL_7_3
 	bool "7.3"
 	help
 	  Newest branch, with 7.2's overlays and names. Booted on the 8X
-	  only so far.
+	  and 4E; untested on the R4.
 
 endchoice
 

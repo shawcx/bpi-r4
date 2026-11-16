@@ -323,9 +323,11 @@ config UBOOT_RELEASE
 	string "u-boot release"
 	help
 	  A frank-w/u-boot release tag for the base image, bl2 and fip.
-	  Empty takes the latest release. Needs 2026.07 or newer: uEnv.txt's
-	  console line is written for its env, and the 4E's FIT config is
-	  known from then on.
+	  Empty takes the 2026.07 CI build of 2026-08-12 (build.sh): the
+	  2026.10 build of 2026-11-14 doesn't boot (no serial clock, a
+	  reset loop) until it has upstream's clock fix.
+	  Needs 2026.07 or newer: uEnv.txt's console line is written for
+	  its env, and the 4E's FIT config is known from then on.
 
 config KERNEL_RELEASE
 	string "Kernel release"

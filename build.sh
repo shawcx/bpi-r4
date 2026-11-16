@@ -170,7 +170,13 @@ esac
 # (resolve-config refuses an older UBOOT_RELEASE)
 uenv+=${uenv:+$'\n'}"console=console=ttyS0,115200n1 earlycon=uart8250,mmio32,0x11000000"
 dt_overlays+=${CONFIG_DT_OVERLAYS:+ $CONFIG_DT_OVERLAYS}
-uboot_release=$CONFIG_UBOOT_RELEASE
+# pinned, not the latest release: 2026.10 (the 2026-11-14 build) doesn't
+# boot. Its MediaTek clock driver keeps the clock providers in a static
+# array, which can't be used before relocation: the UART finds no baud clock
+# ("No serial driver found") and u-boot resets in a loop. Upstream's
+# 3ffad26f17 (clk: mediatek: fix using clocks before relocation) fixes it,
+# after v2026.10; 2026.10 with it boots on the 8X
+uboot_release=${CONFIG_UBOOT_RELEASE:-CI-BUILD-2026-07-bpi-2026.07-2026-08-12_1320}
 [[ -z $CONFIG_GPS_TIME ]] || overlays+=" gps"
 [[ $CONFIG_ROLE != router ]] || overlays+=" router"
 [[ -z $CONFIG_FIREWALL ]] || overlays+=" firewall"

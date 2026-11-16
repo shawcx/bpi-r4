@@ -356,6 +356,13 @@ make kernel-install HOST=root@bpi                   # kernel onto a running boar
   `kernel/patches-eip197` adds one, taken from the MT7987's identical block,
   but it hasn't been tested on hardware. Set the patch directory to it to
   try it.
+- **MxL862xx SFP port:** on the switch firmware the R4 Pro ships with, the
+  driver gives SerDes port 13 no PCS, so the 4E's `sfp-lan` and the 8X's `lan6`
+  in SFP mode can't link (see Known issues). `kernel/patches-mxl862xx-sfp`
+  selects the driver's legacy PCS for that port. It's for kernel 7.3. On the
+  4E, `sfp-lan` then links at 10G and passes traffic with a passive DAC; other
+  modules and the 8X's `lan6` are untested. Set the patch directory to it to
+  use it.
 - **Installing on a running board:** `make kernel-install HOST=root@<board>`
   builds the kernel and installs it over SSH:
   - the modules, under `/lib/modules/<release>`;
@@ -560,8 +567,9 @@ this order:
 
 - **MxL862xx switch firmware:** both R4 Pro boards ship with firmware 1.0.70,
   which has no SerDes PCS support. The 4E's `sfp-lan` can't link, and the 8X's
-  `lan6` probably can't either. Firmware 1.0.85 may fix this, but flashing it is
-  one-way.
+  `lan6` probably can't either. `kernel/patches-mxl862xx-sfp` works around it
+  on kernel 7.3 (see Custom kernels). Firmware 1.0.85 may fix this too, but
+  flashing it is one-way.
 
 ## License
 
